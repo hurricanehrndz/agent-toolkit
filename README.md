@@ -165,7 +165,8 @@ reading:
 ./scripts/web fetch https://example.com/docs --include-selector main --exclude-selector nav
 ```
 
-Search defaults to `https://search.hrndz.ca`; set `WEB_SEARCH_BASE_URL` or pass
+Search defaults to `http://localhost:7888` on the host `chernand-main` and
+`https://search.hrndz.ca` elsewhere. Set `WEB_SEARCH_BASE_URL` or pass
 `--base-url` to change it. See [the skill instructions](skills/web/SKILL.md) for
 consent, GitHub handling, prerequisites, and static-extraction limitations.
 

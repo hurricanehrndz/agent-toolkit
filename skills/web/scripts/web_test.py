@@ -255,6 +255,20 @@ class SearchTests(unittest.TestCase):
     def args(self, *extra: str):
         return web.parser().parse_args(["search", "--query", "  useful query  ", *extra])
 
+    def test_search_default_depends_on_hostname_and_allows_overrides(self):
+        with mock.patch.dict(web.os.environ):
+            web.os.environ.pop("WEB_SEARCH_BASE_URL", None)
+            with mock.patch.object(web.socket, "gethostname", return_value="chernand-main"):
+                self.assertEqual(self.args().base_url, "http://localhost:7888")
+            with mock.patch.object(web.socket, "gethostname", return_value="another-host"):
+                self.assertEqual(self.args().base_url, "https://search.hrndz.ca")
+            with mock.patch.object(web.socket, "gethostname", return_value="chernand-main"):
+                self.assertEqual(self.args("--base-url", "https://search.example").base_url, "https://search.example")
+
+        with mock.patch.dict(web.os.environ, {"WEB_SEARCH_BASE_URL": "https://env-search.example"}):
+            with mock.patch.object(web.socket, "gethostname", return_value="chernand-main"):
+                self.assertEqual(self.args().base_url, "https://env-search.example")
+
     def test_search_url_normalizes_base_and_pagination_options(self):
         args = self.args("--page", "3", "--categories", "news", "--categories", "science", "--engines", "bing", "--language", "en", "--time-range", "week")
         url = web.build_search_url("https://search.example/prefix", args)

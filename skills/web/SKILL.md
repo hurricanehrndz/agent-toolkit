@@ -31,7 +31,9 @@ No client-side code or dynamic rendering is used.
 
 ## Search
 
-Search the configured SearXNG instance (default: `https://search.hrndz.ca`):
+Search the configured SearXNG instance. The default is `http://localhost:7888`
+when the hostname is exactly `chernand-main`, and `https://search.hrndz.ca` on
+other hosts:
 
 ```bash
 ./scripts/web search --query "current Python release notes"

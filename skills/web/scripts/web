@@ -16,6 +16,7 @@ import os
 import pathlib
 import selectors
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,8 @@ from dataclasses import dataclass
 from typing import Any, BinaryIO, Mapping, Sequence, cast
 
 DEFAULT_SEARCH_BASE_URL = "https://search.hrndz.ca"
+LOCAL_SEARCH_HOSTNAME = "chernand-main"
+LOCAL_SEARCH_BASE_URL = "http://localhost:7888"
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_MAX_LINES = 1000
 DEFAULT_MAX_BYTES = 100_000
@@ -215,6 +218,15 @@ def http_request(
             raise WebError(f"Response read failed: {clean_snippet(error)}") from error
         finally:
             response.close()
+
+
+def default_search_base_url() -> str:
+    configured = os.environ.get("WEB_SEARCH_BASE_URL")
+    if configured is not None:
+        return configured
+    if socket.gethostname() == LOCAL_SEARCH_HOSTNAME:
+        return LOCAL_SEARCH_BASE_URL
+    return DEFAULT_SEARCH_BASE_URL
 
 
 def build_search_url(base_url: str, args: argparse.Namespace) -> str:
@@ -816,7 +828,7 @@ def parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--engines", action="append", default=[])
     search_parser.add_argument("--language")
     search_parser.add_argument("--time-range", choices=("day", "week", "month", "year"))
-    search_parser.add_argument("--base-url", default=os.environ.get("WEB_SEARCH_BASE_URL", DEFAULT_SEARCH_BASE_URL))
+    search_parser.add_argument("--base-url", default=default_search_base_url())
     search_parser.add_argument("--timeout", type=positive_float, default=DEFAULT_TIMEOUT)
     fetch_parser = subcommands.add_parser("fetch", help="fetch one HTTP(S) URL as Markdown")
     fetch_parser.add_argument("url")
