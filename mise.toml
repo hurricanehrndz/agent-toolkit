@@ -38,8 +38,8 @@ description = "Show managed toolkit resource state"
 run = "node scripts/agent-toolkit.mjs status"
 
 [tasks."toolkit:sync"]
-description = "Synchronize managed toolkit resources"
-run = "node scripts/agent-toolkit.mjs sync"
+description = "Synchronize toolkit resources and install respec"
+run = "node scripts/toolkit-sync.mjs"
 
 [tasks."toolkit:uninstall"]
 description = "Remove managed toolkit resources owned by this checkout"

@@ -27,20 +27,24 @@ explicit decision.
 | Development package manager/tests | Bun 1.3.13 |
 | Portable web helper | CPython 3.14.7 standard library, selected by its executable uv-script entry point |
 | Development tasks | mise (`mise run …`) with `settings.locked = true` |
+| Personal respec install | Git plus respec's locked mise tools through `mise run toolkit:sync` |
 | Python development dependencies | uv with the root `pyproject.toml` and `uv.lock` |
 | Formatting and hooks | treefmt and prek |
 
 Use `mise run setup`, `mise run fmt`, `mise run typecheck`, `mise run test`, and
 `mise run check` for repository work. Manage toolkit resources with
 `mise run toolkit:validate|status|sync|uninstall`; pass CLI options after `--`.
-`toolkit:sync` is the normal reconciler. Additive-only `install` remains a
-direct CLI/bin command and has no mise alias. Use npm only for local package/bin
-smoke tests; never add an installer runtime dependency. Do not add runtime
-Python packages for the web helper; the root mypy/mdformat packages are
-development only. Pi peer packages provide types and must not be bundled. When
-intentionally refreshing Python dependencies, keep public resolution explicit
-with `UV_DEFAULT_INDEX=https://pypi.org/simple uv lock --python 3.14.7`, then
-inspect the lock before committing it.
+`toolkit:sync` is the normal reconciler. It also clones respec to
+`~/src/me/respec` when absent, runs `mise install`, then runs
+`mise exec -- just install` there. Its dry run must not clone, install tools,
+build, or install. Additive-only `install` remains a direct CLI/bin command and
+has no mise alias. Use npm only for local package/bin smoke tests; never add an
+installer runtime dependency. Do not add runtime Python packages for the web
+helper; the root mypy/mdformat packages are development only. Pi peer packages
+provide types and must not be bundled. When intentionally refreshing Python
+dependencies, keep public resolution explicit with
+`UV_DEFAULT_INDEX=https://pypi.org/simple uv lock --python 3.14.7`, then inspect
+the lock before committing it.
 
 First-time repository setup is:
 

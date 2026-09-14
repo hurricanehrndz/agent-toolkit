@@ -47,6 +47,8 @@ Every discovered skill defaults to all four agents. The optional
 - [Node.js](https://nodejs.org) 24.14.1 for the dependency-free skill installer.
 - [Bun](https://bun.sh) 1.3.13 for development dependencies, TypeScript tooling,
   tests, and personal Pi extensions.
+- Git for cloning `respec`; its locked Go and just versions are installed by
+  mise during `mise run toolkit:sync`.
 - [Pi](https://pi.dev), when using the Pi-only extensions or the `review` and
   `subagent` skills.
 - `obsidian`, when using `obsidian-cli`.
@@ -91,9 +93,12 @@ mise run toolkit:sync -- --dry-run
 mise run toolkit:sync
 ```
 
-`toolkit:sync` is the normal reconciler for both resource types. It installs
-expected links and removes stale links owned by this checkout. The CLI uses
-these eight fixed destinations:
+`toolkit:sync` reconciles both resource types. It installs expected links and
+removes stale links owned by this checkout. It also clones
+`https://github.com/hurricanehrndz/respec` to `~/src/me/respec` when absent,
+runs `mise install`, then runs `mise exec -- just install` from that checkout.
+Pass `--dry-run` to preview both parts without cloning, installing tools,
+building, or installing. The resource CLI uses these eight fixed destinations:
 
 | Agent | Skills | Global context |
 | -- | -- | -- |
@@ -116,9 +121,10 @@ mise run toolkit:sync -- --agent all
 mise run toolkit:uninstall -- --agent claude --dry-run
 ```
 
-The executable and package bin provide the full CLI when mise is unavailable:
-`./scripts/agent-toolkit.mjs <command> [options]` or
-`agent-toolkit <command> [options]`.
+The executable and package bin manage skills and context when mise is
+unavailable: `./scripts/agent-toolkit.mjs <command> [options]` or
+`agent-toolkit <command> [options]`. The separate respec installation is part of
+only the `toolkit:sync` mise task.
 
 - `sync` reconciles skills and optional context. It removes only links owned by
   this checkout.
