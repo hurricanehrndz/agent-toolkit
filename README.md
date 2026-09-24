@@ -27,6 +27,7 @@ The package and installer deliberately do not both own Pi skill installation.
 | Name | Harnesses | Description |
 | -- | -- | -- |
 | [bro](skills/bro/SKILL.md) | Pi, Prime, Codex, Claude | Restates the previous message in concise, jargon-free language |
+| [diagrams](skills/diagrams/SKILL.md) | Pi, Prime, Codex, Claude | Renders diagrams as PNGs with Python `diagrams` or Mermaid, chosen by each tool's strengths |
 | [obsidian-cli](skills/obsidian-cli/SKILL.md) | Pi, Prime, Codex, Claude | Reads, searches, and safely edits the primary Obsidian vault |
 | [review](skills/review/SKILL.md) | Pi | Runs an explicitly invoked, read-only subagent review of the current branch |
 | [subagent](skills/subagent/SKILL.md) | Pi | Spawns an isolated Pi process for delegated work |
@@ -52,6 +53,7 @@ Every discovered skill defaults to all four agents. The optional
 - [Pi](https://pi.dev), when using the Pi-only extensions or the `review` and
   `subagent` skills.
 - `obsidian`, when using `obsidian-cli`.
+- Graphviz (`dot`) and `mmdc`, when using `diagrams`.
 - `gh`, when the web skill reads recognized GitHub URLs.
 - `html2markdown`, only for the web skill's ordinary static-HTML conversion
   path.
