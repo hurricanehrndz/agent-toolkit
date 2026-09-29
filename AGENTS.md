@@ -8,8 +8,11 @@ Skills.
 - `extensions/<name>/index.ts` is delivered through `package.json` →
   `pi.extensions` and runs only in Pi.
 - `skills/<name>/SKILL.md` is installed only by `scripts/agent-toolkit.mjs`.
-- `context/working-style.md` is the optional global-context source. When it
-  exists, the installer manages one fixed link for every selected agent.
+- `context/working-style.md.j2` is the optional global-context template. When it
+  exists, install/sync render `context/dist/<agent>.md` (gitignored) and the
+  installer manages one fixed link to it for every selected agent. The template
+  accepts only `{% if agent == "x" %}`, `{% if agent in [...] %}`, and
+  `{% endif %}`, so it stays valid Jinja; Pi and Prime get identical content.
 - Every discovered skill defaults to Pi, Prime, Codex, and Claude.
   `agent-toolkit.json` is optional and lists only skills whose agent scope
   overrides that default.
@@ -66,7 +69,8 @@ skills/
     SKILL.md
     scripts/
 context/
-  working-style.md         # optional global context for all selected agents
+  working-style.md.j2      # optional global-context template for all agents
+  dist/                    # gitignored per-agent render, written by sync
 agent-toolkit.json        # optional non-default skill scope overrides
 scripts/
   agent-toolkit.mjs
@@ -93,8 +97,10 @@ Keep installer behavior aligned with its ownership-safe design:
 - install and status consider each selected agent's effective skill scope;
 - sync/uninstall remove only direct skill links targeting this checkout's
   `skills/` directory;
-- a context link is owned only when its target exactly equals this checkout's
-  resolved `context/working-style.md` path, including after source deletion;
+- a context link is owned only when its target exactly equals one of this
+  checkout's resolved `context/dist/<agent>.md` paths or the legacy
+  `context/working-style.md` path, including after source deletion; only sync
+  repoints an owned link to the selected agent's render;
 - an absent context source is valid and gives the checkout no global context to
   install; an existing source must be a regular file, not a symlink;
 - preserve unmanaged files/directories, external and moved-checkout links,

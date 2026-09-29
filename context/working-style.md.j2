@@ -57,12 +57,24 @@ non-trivial work and use judgment on trivial tasks.
 
 ## Delegating to subagents
 
-- If subagents are available, delegate only when the task is big enough to need
-  it — it would otherwise crowd out this context, or it splits cleanly into a
-  bounded piece with a self-contained result. Anything you can finish directly
-  in a few steps, do directly.
-- When delegating, prefer serial delegation: one subagent at a time, each
-  finished before the next starts. It keeps the work reviewable and stops
-  children racing on the same files. Fanning out is occasionally the right call
-  — genuinely independent pieces where waiting is the real cost — but treat it
-  as the exception, and say why before you do it.
+Subagents share my usage window; parallel ones burn it fastest. Delegate only
+to keep bulky work out of this context or to get an independent result. Pass
+children what you already know and a result size, and use the smallest model
+that fits.
+
+{% if agent in ["pi", "prime"] %}
+Run one child at a time. Fan out only for independent pieces where waiting is
+the real cost, and say why first.
+{% endif %}
+{% if agent in ["codex", "claude"] %}
+Run at most two children at once; ask before running more.
+{% endif %}
+
+## Feedback loops
+
+- Before editing, run the fastest check that covers the change for a baseline;
+  reproduce a bug before fixing it.
+- Iterate change → fast check; run the full suite once at the end.
+- If no fast check exists, say so and propose one.
+- On non-trivial work, show me the plan or first small slice before building
+  the rest.

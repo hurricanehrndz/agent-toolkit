@@ -10,7 +10,7 @@ remains the development test runner.
 | -- | -- | -- |
 | `extensions/` | The `agent-toolkit` Pi package (`package.json` → `pi.extensions`) | Pi only |
 | `skills/` | Per-skill symlinks managed only by `scripts/agent-toolkit.mjs`; optional `agent-toolkit.json` overrides the default scope | All four agents by default, with per-skill exceptions |
-| `context/working-style.md` | One fixed global-context symlink per agent, managed by the same CLI | All four agents when the source file exists |
+| `context/working-style.md.j2` | Rendered per agent into gitignored `context/dist/<agent>.md` on install/sync, with one fixed global-context symlink per agent | All four agents when the template exists |
 
 The package and installer deliberately do not both own Pi skill installation.
 
@@ -110,9 +110,15 @@ building, or installing. The resource CLI uses these eight fixed destinations:
 | Claude | `~/.claude/skills` | `~/.claude/CLAUDE.md` |
 
 Every discovered skill defaults to all four agents unless `agent-toolkit.json`
-narrows its scope. The presence of `context/working-style.md` makes global
+narrows its scope. The presence of `context/working-style.md.j2` makes global
 context expected for every selected agent. A checkout without that file does not
 own global context and will not remove a link installed by another checkout.
+
+The template is a Jinja subset: `{% if agent == "claude" %}`,
+`{% if agent in ["pi", "prime"] %}`, and `{% endif %}`, rendered with Jinja's
+`trim_blocks` and `lstrip_blocks` rules. Any other tag, `{{ }}`, or `{# #}`
+fails validation. Edits reach agents only when you run `sync`; `status` reports
+stale renders as `outdated`.
 
 Select agents with repeatable `--agent` flags or a comma-separated value:
 
@@ -150,8 +156,9 @@ only the `toolkit:sync` mise task.
 
 - `--home <path>` overrides the home directory, primarily for tests.
 
-Context ownership requires an exact link target of this checkout's
-`context/working-style.md`. Skill ownership remains limited to direct children
+Context ownership requires an exact link target of one of this checkout's
+`context/dist/<agent>.md` files or the pre-template `context/working-style.md`;
+`sync` repoints the latter. Skill ownership remains limited to direct children
 of this checkout's `skills/` directory. Files, directories, external links,
 links from a moved checkout, and separately managed resources are preserved. A
 conflict produces a nonzero exit rather than replacing content.

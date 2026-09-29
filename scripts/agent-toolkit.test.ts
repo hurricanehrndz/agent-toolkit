@@ -48,11 +48,15 @@ description: Use ${name} while testing.
 	return path;
 }
 
-async function addContextSource(): Promise<string> {
-	const path = join(repoRoot, "context/working-style.md");
+async function addContextSource(template = "# Working style\n"): Promise<string> {
+	const path = join(repoRoot, "context/working-style.md.j2");
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, "# Working style\n");
+	await writeFile(path, template);
 	return path;
+}
+
+function distPath(agent: keyof typeof contextDestinations): string {
+	return join(repoRoot, "context/dist", `${agent}.md`);
 }
 
 async function capture(callback: () => Promise<number>): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -253,14 +257,23 @@ describe("agent-toolkit installer", () => {
 		expect(result.stdout).toContain("prime: 0 linked, 1 missing, 0 conflicts");
 	});
 
-	test("links optional context to exact destinations and respects selected agents", async () => {
-		const contextSource = await addContextSource();
+	test("renders per-agent context and links exact destinations for selected agents", async () => {
+		await addContextSource(
+			'# Working style\n{% if agent in ["pi", "prime"] %}\nSerial.\n{% endif %}\n{% if agent == "claude" %}\nParallel.\n{% endif %}\nEnd.\n',
+		);
+		const expected = {
+			pi: "# Working style\nSerial.\nEnd.\n",
+			prime: "# Working style\nSerial.\nEnd.\n",
+			codex: "# Working style\nEnd.\n",
+			claude: "# Working style\nParallel.\nEnd.\n",
+		};
 		const allHome = join(sandbox, "all-context-home");
 		expect(await run(["install", "--home", allHome], repoRoot)).toBe(0);
-		for (const relativeDestination of Object.values(contextDestinations)) {
-			const destination = join(allHome, relativeDestination);
+		for (const agent of Object.keys(contextDestinations) as Array<keyof typeof contextDestinations>) {
+			const destination = join(allHome, contextDestinations[agent]);
 			expect(lstatSync(destination).isSymbolicLink()).toBeTrue();
-			expect(resolve(dirname(destination), readlinkSync(destination))).toBe(contextSource);
+			expect(resolve(dirname(destination), readlinkSync(destination))).toBe(distPath(agent));
+			expect(await Bun.file(destination).text()).toBe(expected[agent]);
 		}
 
 		const selectedHome = join(sandbox, "selected-context-home");
@@ -273,20 +286,61 @@ describe("agent-toolkit installer", () => {
 		}
 	});
 
+	test("updates rendered context only on sync and is idempotent", async () => {
+		const source = await addContextSource("first\n");
+		expect(await run(["sync", "--agent", "codex", "--home", home], repoRoot)).toBe(0);
+		const destination = join(home, contextDestinations.codex);
+		await writeFile(source, "second\n");
+		expect(await Bun.file(destination).text()).toBe("first\n");
+
+		const status = await capture(() => run(["status", "--agent", "codex", "--home", home], repoRoot));
+		expect(status.stdout).toContain(`  context: outdated (${destination})\n`);
+		const preview = await capture(() => run(["sync", "--agent", "codex", "--dry-run", "--home", home], repoRoot));
+		expect(preview.stdout).toContain("Dry run: 1 change(s) would be made.");
+		expect(await Bun.file(destination).text()).toBe("first\n");
+
+		expect(await run(["sync", "--agent", "codex", "--home", home], repoRoot)).toBe(0);
+		expect(await Bun.file(destination).text()).toBe("second\n");
+		const again = await capture(() => run(["sync", "--agent", "codex", "--dry-run", "--home", home], repoRoot));
+		expect(again.stdout).not.toContain("Dry run:");
+	});
+
+	test("sync repoints pre-template context links; install only reports them", async () => {
+		await addContextSource();
+		const legacy = join(repoRoot, "context/working-style.md");
+		const destination = join(home, contextDestinations.claude);
+		await mkdir(dirname(destination), { recursive: true });
+		await symlink(relative(dirname(destination), legacy), destination);
+
+		const status = await capture(() => run(["status", "--agent", "claude", "--home", home], repoRoot));
+		expect(status.code).toBe(0);
+		expect(status.stdout).toContain(`  context: outdated (${destination})\n`);
+		const install = await capture(() => run(["install", "--agent", "claude", "--home", home], repoRoot));
+		expect(install.code).toBe(0);
+		expect(install.stdout).toContain("outdated context link");
+		expect(resolve(dirname(destination), readlinkSync(destination))).toBe(legacy);
+
+		const preview = await capture(() => run(["sync", "--agent", "claude", "--dry-run", "--home", home], repoRoot));
+		expect(preview.stdout).toContain(`  relink context: ${destination}\n`);
+		expect(resolve(dirname(destination), readlinkSync(destination))).toBe(legacy);
+		expect(await run(["sync", "--agent", "claude", "--home", home], repoRoot)).toBe(0);
+		expect(resolve(dirname(destination), readlinkSync(destination))).toBe(distPath("claude"));
+	});
+
 	test("accepts an absent context source without creating context roots", async () => {
 		const result = await capture(() => run(["install", "--home", home], repoRoot));
 		expect(result.code).toBe(0);
 		for (const relativeDestination of Object.values(contextDestinations)) {
 			expect(existsSync(dirname(join(home, relativeDestination)))).toBeFalse();
 		}
+		expect(existsSync(join(repoRoot, "context/dist"))).toBeFalse();
 	});
 
 	test("status reports linked, missing, and conflicting context separately", async () => {
-		const contextSource = await addContextSource();
+		await addContextSource();
+		expect(await run(["install", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
 		const piDestination = join(home, contextDestinations.pi);
 		const conflictDestination = join(home, contextDestinations.codex);
-		await mkdir(dirname(piDestination), { recursive: true });
-		await symlink(relative(dirname(piDestination), contextSource), piDestination);
 		await mkdir(dirname(conflictDestination), { recursive: true });
 		await writeFile(conflictDestination, "keep");
 
@@ -300,7 +354,7 @@ describe("agent-toolkit installer", () => {
 		expect(await Bun.file(conflictDestination).text()).toBe("keep");
 	});
 
-	test("preserves every context destination not owned by the current source", async () => {
+	test("preserves every context destination not owned by the current checkout", async () => {
 		await addContextSource();
 		const destinations = {
 			pi: join(home, contextDestinations.pi),
@@ -315,7 +369,7 @@ describe("agent-toolkit installer", () => {
 		await writeFile(external, "external");
 		await mkdir(dirname(destinations.codex), { recursive: true });
 		await symlink(external, destinations.codex);
-		const moved = join(sandbox, "moved-checkout/context/working-style.md");
+		const moved = join(sandbox, "moved-checkout/context/dist/claude.md");
 		await mkdir(dirname(moved), { recursive: true });
 		await writeFile(moved, "moved");
 		await mkdir(dirname(destinations.claude), { recursive: true });
@@ -331,12 +385,23 @@ describe("agent-toolkit installer", () => {
 		expect(readlinkSync(destinations.claude)).toBe(moved);
 	});
 
+	test("does not own links to the template source itself", async () => {
+		const source = await addContextSource();
+		const destination = join(home, contextDestinations.pi);
+		await mkdir(dirname(destination), { recursive: true });
+		await symlink(source, destination);
+		expect((await capture(() => run(["sync", "--agent", "pi", "--home", home], repoRoot))).code).toBe(1);
+		expect(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
+		expect(readlinkSync(destination)).toBe(source);
+	});
+
 	test("recognizes relative owned context links and removes them after source deletion", async () => {
 		const contextSource = await addContextSource();
+		const targets = { pi: distPath("pi"), prime: join(repoRoot, "context/working-style.md") };
 		for (const agent of ["pi", "prime"] as const) {
 			const destination = join(home, contextDestinations[agent]);
 			await mkdir(dirname(destination), { recursive: true });
-			await symlink(relative(dirname(destination), contextSource), destination);
+			await symlink(relative(dirname(destination), targets[agent]), destination);
 		}
 		await rm(contextSource);
 
@@ -357,18 +422,19 @@ describe("agent-toolkit installer", () => {
 		expect(() => lstatSync(join(home, contextDestinations.prime))).toThrow();
 	});
 
-	test("context dry-run counts additions without creating parent roots", async () => {
+	test("context dry-run counts render and link without writing anything", async () => {
 		await addContextSource();
 		const destination = join(home, contextDestinations.claude);
 		const result = await capture(() =>
 			run(["sync", "--agent", "claude", "--dry-run", "--home", home], repoRoot),
 		);
-		expect(result.stdout).toContain("Dry run: 1 change(s) would be made.");
+		expect(result.stdout).toContain("Dry run: 2 change(s) would be made.");
 		expect(existsSync(dirname(destination))).toBeFalse();
+		expect(existsSync(join(repoRoot, "context/dist"))).toBeFalse();
 	});
 
 	test("a context-free checkout preserves links owned by another checkout", async () => {
-		const personalSource = join(sandbox, "personal/context/working-style.md");
+		const personalSource = join(sandbox, "personal/context/dist/pi.md");
 		const destination = join(home, contextDestinations.pi);
 		await mkdir(dirname(personalSource), { recursive: true });
 		await writeFile(personalSource, "personal");
@@ -382,7 +448,7 @@ describe("agent-toolkit installer", () => {
 
 	test("rejects invalid context sources before any mutation", async () => {
 		await addSkill("valid");
-		const contextSource = join(repoRoot, "context/working-style.md");
+		const contextSource = join(repoRoot, "context/working-style.md.j2");
 		const invalidTargets = ["directory", "socket", "symlink", "broken-symlink"] as const;
 		for (const invalid of invalidTargets) {
 			await rm(join(repoRoot, "context"), { recursive: true, force: true });
@@ -399,12 +465,33 @@ describe("agent-toolkit installer", () => {
 			}
 			const result = await capture(() => run(["install", "--agent", "pi", "--home", home], repoRoot));
 			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("context/working-style.md: must be a regular file");
+			expect(result.stderr).toContain("context/working-style.md.j2: must be a regular file");
 			expect(existsSync(join(home, roots.pi))).toBeFalse();
 			expect(existsSync(join(home, contextDestinations.pi))).toBeFalse();
 			if (server !== undefined) {
 				await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 			}
+		}
+	});
+
+	test("rejects template syntax outside the Jinja agent-conditional subset before mutation", async () => {
+		await addSkill("valid");
+		const invalidTemplates = [
+			["{{ agent }}\n", "line 1: only {% if agent ... %} blocks are supported"],
+			["a\n{# note #}\n", "line 2: only {% if agent ... %} blocks are supported"],
+			['{% if agent == "pi" %}\nx\n{% else %}\ny\n{% endif %}\n', "line 3: unsupported tag {% else %}"],
+			["{% if agent == 'pi' %}\nx\n{% endif %}\n", "line 1: unsupported tag"],
+			['{% if agent == "cursor" %}\nx\n{% endif %}\n', 'line 1: unknown agent "cursor"'],
+			['{% if agent == "pi" %}\nx\n', "{% if %} without {% endif %}"],
+			["x\n{% endif %}\n", "line 2: {% endif %} without {% if %}"],
+		] as const;
+		for (const [template, message] of invalidTemplates) {
+			await addContextSource(template);
+			const result = await capture(() => run(["sync", "--home", home], repoRoot));
+			expect(result.code, template).toBe(1);
+			expect(result.stderr).toContain(`context/working-style.md.j2: ${message}`);
+			expect(existsSync(join(home, roots.pi))).toBeFalse();
+			expect(existsSync(join(repoRoot, "context/dist"))).toBeFalse();
 		}
 	});
 

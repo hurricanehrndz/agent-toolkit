@@ -12,3 +12,4 @@ bun.lockb
 .DS_Store
 
 .samples/
+context/dist/
