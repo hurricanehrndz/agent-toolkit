@@ -1,0 +1,645 @@
+#!/usr/bin/env bash
+# rig: drive a local libvirt Windows test VM. See ../SKILL.md.
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+usage: rig [-v VM] <command> [args]
+
+  list                     configured VMs with state and notes
+  env                      print the resolved configuration
+  doctor                   check every layer of the rig, report ok/warn/FAIL
+  provision --iso PATH     create the VM unattended [--memory MiB] [--vcpus N] [--disk GiB] [--dry-run]
+  up [SECONDS]             start the VM and wait for SSH (default 300 s)
+  down                     shut down gracefully and wait
+  reset [SNAPSHOT]         power off, revert to SNAPSHOT (default clean), start, wait for SSH
+  snapshot [NAME]          save the shut-off VM as NAME (default clean), replacing it
+  copy DEST_URI [NAME]     copy the shut-off VM to another libvirt host; config NAME defaults to HOST-VM
+  ip                       print the guest IPv4 address
+  ssh [COMMAND]            PowerShell over SSH (interactive when no command)
+  put LOCAL [REMOTE]       copy to the guest (default C:/rig/)
+  get REMOTE LOCAL         copy from the guest
+  ps FILE.ps1 [ARGS]       copy FILE to C:\rig and run it over SSH (no desktop)
+  run-it [--wait] [--elevated] FILE.ps1
+                           run FILE on the interactive desktop as the logged-on user
+  focus PROCESS            bring PROCESS's main window to the foreground
+  authorize KEY.pub        let another host's rig key into the guest (then: down, snapshot)
+  cleanup                  remove rig-* scheduled tasks
+  shot [--settle S] [OUT]  screenshot the desktop to OUT.png (default settle 2 s)
+  key KEY...               send one key chord, e.g. key KEY_LEFTSHIFT KEY_TAB
+  type TEXT | --enter      type TEXT on the console keyboard
+  tunnel PORT [TARGET]     expose host TARGET (default 127.0.0.1:PORT) as guest 127.0.0.1:PORT
+
+VMs: one file per VM, ~/.config/windows-test-rig/vms/VM.env (RIG_VMS_DIR overrides).
+-v VM (or RIG_VM) selects one; it may be omitted when exactly one is configured.
+With none configured, the VM is win11-test.
+EOF
+}
+
+SKILL_DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+VMS_DIR=${RIG_VMS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/windows-test-rig/vms}
+RIG_VM=${RIG_VM:-}
+if [[ ${1:-} == -v ]]; then
+	RIG_VM=${2:?usage: rig -v VM <command>}
+	shift 2
+fi
+if [[ -z $RIG_VM ]]; then
+	shopt -s nullglob
+	configs=("$VMS_DIR"/*.env)
+	shopt -u nullglob
+	case ${#configs[@]} in
+	0) RIG_VM=win11-test ;;
+	1) RIG_VM=$(basename "${configs[0]}" .env) ;;
+	*) ;; # ambiguous: every command except list and help refuses below
+	esac
+fi
+RIG_CONFIG=$VMS_DIR/${RIG_VM:-unselected}.env
+# shellcheck disable=SC1090
+[[ -f $RIG_CONFIG ]] && source "$RIG_CONFIG"
+RIG_URI=${RIG_URI:-qemu:///system}
+RIG_DOMAIN=${RIG_DOMAIN:-$RIG_VM}
+RIG_USER=${RIG_USER:-tester}
+RIG_KEY=${RIG_KEY:-$HOME/.ssh/id_ed25519}
+RIG_POOL=${RIG_POOL:-default}
+RIG_NETWORK=${RIG_NETWORK:-default}
+RIG_HOST=${RIG_HOST:-}
+RIG_NOTE=${RIG_NOTE:-}
+
+die() {
+	echo "rig: $*" >&2
+	exit 1
+}
+# A VM on another Linux host uses RIG_URI=qemu+ssh://[user@]host/system; guest
+# SSH then hops through that host (RIG_JUMP, defaulting to the URI's host).
+[[ $RIG_URI =~ ^qemu\+ssh://([^/?]+)/ ]] && RIG_JUMP=${RIG_JUMP:-${BASH_REMATCH[1]}}
+RIG_JUMP=${RIG_JUMP:-}
+# CEILING: nothing stops two hosts driving one VM at once (say, a reset during
+# another host's test). Fine for a single user; a lock file in the guest's
+# C:\rig would be the upgrade.
+v() { env -u SSH_AUTH_SOCK virsh -q -c "$RIG_URI" "$@"; }
+state() { v domstate "$RIG_DOMAIN" 2>/dev/null || echo missing; }
+
+# The guest is a throwaway on a private bridge whose host key changes on every
+# rebuild, so host keys are not pinned. The agent is bypassed because a stale
+# forwarded SSH_AUTH_SOCK hangs or burns the server's auth-attempt limit.
+SSH_OPTS=(-o IdentitiesOnly=yes -i "$RIG_KEY" -o PreferredAuthentications=publickey
+	-o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+# ProxyJump would not carry the -i/IdentitiesOnly options to the hop, so the hop is spelled out.
+[[ -n $RIG_JUMP ]] && SSH_OPTS+=(-o "ProxyCommand=ssh -i $RIG_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -W %h:%p $RIG_JUMP")
+sshx() { env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" "$@"; }
+scpx() { env -u SSH_AUTH_SOCK scp -q "${SSH_OPTS[@]}" "$@"; }
+
+guest_ip() {
+	[[ -n $RIG_HOST ]] && {
+		echo "$RIG_HOST"
+		return
+	}
+	local src
+	for src in lease arp; do
+		v domifaddr "$RIG_DOMAIN" --source "$src" 2>/dev/null |
+			awk '$3 == "ipv4" { sub(/\/.*/, "", $4); print $4; exit }' | command grep . && return
+	done
+	return 1
+}
+target() {
+	local ip
+	ip=$(guest_ip) || die "no IP for $RIG_DOMAIN (state: $(state)); try: rig up"
+	echo "$RIG_USER@$ip"
+}
+
+put() {
+	local t
+	t=$(target)
+	sshx "$t" 'New-Item -ItemType Directory -Force C:\rig | Out-Null'
+	scpx "$1" "$t:${2:-C:/rig/}"
+}
+
+# Run PowerShell source from stdin as a .ps1 file, which avoids the local shell
+# eating $ and the PS 5.1 quoting traps of inline -Command strings.
+ps_stdin() {
+	local f
+	f=$(mktemp --suffix .ps1 "${TMPDIR:-/tmp}/rig-XXXXXX")
+	cat >"$f"
+	cmd_ps "$f"
+	rm -f "$f"
+}
+
+wait_ssh() {
+	local deadline=$((SECONDS + ${1:-300})) ip
+	while ((SECONDS < deadline)); do
+		if ip=$(guest_ip) && sshx "$RIG_USER@$ip" 'exit 0' 2>/dev/null; then
+			echo "ready: $RIG_USER@$ip"
+			return
+		fi
+		sleep 5
+	done
+	die "SSH not up after ${1:-300} s; check the console: rig shot"
+}
+
+cmd_env() {
+	echo "RIG_CONFIG=$RIG_CONFIG$([[ -f $RIG_CONFIG ]] || echo ' (missing, using defaults)')"
+	for k in RIG_VM RIG_NOTE RIG_URI RIG_JUMP RIG_DOMAIN RIG_USER RIG_KEY RIG_POOL RIG_NETWORK RIG_HOST; do echo "$k=${!k}"; done
+}
+
+cmd_up() {
+	case $(state) in
+	missing) die "domain $RIG_DOMAIN not defined on $RIG_URI; create it: rig provision --iso PATH" ;;
+	running) ;;
+	paused) v resume "$RIG_DOMAIN" >/dev/null ;;
+	*) v start "$RIG_DOMAIN" >/dev/null ;;
+	esac
+	wait_ssh "${1:-300}"
+}
+
+cmd_down() {
+	[[ $(state) == "shut off" ]] && return
+	v shutdown "$RIG_DOMAIN" >/dev/null
+	local deadline=$((SECONDS + 180))
+	while ((SECONDS < deadline)); do
+		[[ $(state) == "shut off" ]] && return
+		sleep 3
+	done
+	die "still $(state) after 180 s; force it with: virsh -c $RIG_URI destroy $RIG_DOMAIN"
+}
+
+cmd_snapshot() {
+	local name=${1:-clean}
+	[[ $(state) == "shut off" ]] || die "shut the VM down first (rig down)"
+	v snapshot-delete "$RIG_DOMAIN" "$name" >/dev/null 2>&1 || true
+	v snapshot-create-as "$RIG_DOMAIN" "$name" >/dev/null
+	echo "snapshot: $name"
+}
+
+cmd_reset() {
+	local name=${1:-clean}
+	v snapshot-info "$RIG_DOMAIN" "$name" >/dev/null 2>&1 || die "no snapshot '$name'; create one with: rig down && rig snapshot $name"
+	[[ $(state) == "shut off" ]] || v destroy "$RIG_DOMAIN" >/dev/null
+	v snapshot-revert "$RIG_DOMAIN" "$name" >/dev/null
+	cmd_up
+}
+
+cmd_ps() {
+	local f=${1:?usage: rig ps FILE.ps1 [ARGS]}
+	shift
+	put "$f"
+	sshx "$(target)" "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\rig\\$(basename "$f") $*"
+}
+
+# GUI processes started over SSH land in the invisible SSH session. A /IT task
+# runs in the logged-on user's desktop session; /RL LIMITED keeps an admin
+# user's standard token, so the app does not run elevated.
+cmd_run_it() {
+	local wait='' rl=LIMITED
+	while [[ ${1:-} == --* ]]; do
+		case $1 in
+		--wait) wait=1 ;;
+		--elevated) rl=HIGHEST ;;
+		*) die "unknown flag $1" ;;
+		esac
+		shift
+	done
+	local f=${1:?usage: rig run-it [--wait] [--elevated] FILE.ps1} name task
+	name=$(basename "$f")
+	task="rig-${name%.ps1}"
+	put "$f"
+	ps_stdin <<EOF
+schtasks /create /tn '$task' /tr "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\rig\\$name" /sc once /st 00:00 /f /it /rl $rl 2>&1 | Out-Null
+if (\$LASTEXITCODE) { throw "schtasks /create failed (\$LASTEXITCODE)" }
+schtasks /run /tn '$task' | Out-Null
+if ('$wait') {
+  Start-Sleep 2
+  while ((Get-ScheduledTask -TaskName '$task').State -eq 'Running') { Start-Sleep 1 }
+  Unregister-ScheduledTask -TaskName '$task' -Confirm:\$false
+}
+EOF
+}
+
+cmd_focus() {
+	local proc=${1:?usage: rig focus PROCESS} f
+	f="${TMPDIR:-/tmp}/focus-$proc.ps1"
+	cat >"$f" <<EOF
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class RigWin {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+}
+'@
+\$p = Get-Process -Name '$proc' | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1
+if (\$p) { [RigWin]::ShowWindow(\$p.MainWindowHandle, 9) | Out-Null; [RigWin]::SetForegroundWindow(\$p.MainWindowHandle) | Out-Null }
+EOF
+	cmd_run_it --wait "$f"
+	rm -f "$f"
+}
+
+# Each host that drives a VM needs its own key in the guest; the unattend file
+# only authorizes the provisioning host's key.
+cmd_authorize() {
+	local key
+	key=$(cut -d' ' -f1,2 "${1:?usage: rig authorize KEY.pub}")
+	[[ $key =~ ^ssh-[a-z0-9-]+\ [A-Za-z0-9+/=]+$ ]] || die "$1 is not an SSH public key"
+	ps_stdin <<EOF
+\$f = 'C:\ProgramData\ssh\administrators_authorized_keys'
+if (-not (Select-String -Path \$f -SimpleMatch '$key' -Quiet)) { Add-Content -Path \$f -Value '$key' -Encoding ascii }
+"authorized: \$((Get-Content \$f | Measure-Object -Line).Lines) key(s)"
+EOF
+}
+
+cmd_cleanup() {
+	ps_stdin <<'EOF'
+Get-ScheduledTask -TaskName 'rig-*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+EOF
+}
+
+capture() {
+	local raw
+	raw=$(mktemp "${TMPDIR:-/tmp}/rig-XXXXXX.ppm")
+	v screenshot "$RIG_DOMAIN" "$raw" >/dev/null
+	magick "$raw" "$1"
+	rm -f "$raw"
+}
+is_black() {
+	local mean
+	mean=$(magick "$1" -colorspace Gray -format '%[fx:mean]' info:)
+	awk -v m="$mean" 'BEGIN { exit !(m < 0.02) }'
+}
+
+# Frames captured mid-animation look like layout bugs, hence the settle delay.
+# A black frame means the display is asleep: wake it and capture again.
+cmd_shot() {
+	local settle=2
+	[[ ${1:-} == --settle ]] && {
+		settle=$2
+		shift 2
+	}
+	local out=${1:-${TMPDIR:-/tmp}/rig-shot-$(date +%s).png}
+	sleep "$settle"
+	capture "$out"
+	if is_black "$out"; then
+		v send-key "$RIG_DOMAIN" KEY_LEFTCTRL >/dev/null
+		sleep 3
+		capture "$out"
+	fi
+	echo "$out"
+}
+
+cmd_key() { v send-key "$RIG_DOMAIN" "$@" >/dev/null; }
+
+cmd_type() {
+	k() {
+		cmd_key "$@"
+		sleep 0.15
+	}
+	[[ ${1:-} == --enter ]] && {
+		k KEY_ENTER
+		return
+	}
+	local text="$*" c i
+	for ((i = 0; i < ${#text}; i++)); do
+		c=${text:i:1}
+		case $c in
+		[[:lower:]]) k "KEY_${c^^}" ;;
+		[[:upper:]]) k KEY_LEFTSHIFT "KEY_$c" ;;
+		[0-9]) k "KEY_$c" ;;
+		" ") k KEY_SPACE ;;
+		.) k KEY_DOT ;;
+		,) k KEY_COMMA ;;
+		/) k KEY_SLASH ;;
+		\\) k KEY_BACKSLASH ;;
+		-) k KEY_MINUS ;;
+		=) k KEY_EQUAL ;;
+		\;) k KEY_SEMICOLON ;;
+		:) k KEY_LEFTSHIFT KEY_SEMICOLON ;;
+		_) k KEY_LEFTSHIFT KEY_MINUS ;;
+		!) k KEY_LEFTSHIFT KEY_1 ;;
+		@) k KEY_LEFTSHIFT KEY_2 ;;
+		\#) k KEY_LEFTSHIFT KEY_3 ;;
+		\$) k KEY_LEFTSHIFT KEY_4 ;;
+		%) k KEY_LEFTSHIFT KEY_5 ;;
+		^) k KEY_LEFTSHIFT KEY_6 ;;
+		\&) k KEY_LEFTSHIFT KEY_7 ;;
+		\*) k KEY_LEFTSHIFT KEY_8 ;;
+		\() k KEY_LEFTSHIFT KEY_9 ;;
+		\)) k KEY_LEFTSHIFT KEY_0 ;;
+		\?) k KEY_LEFTSHIFT KEY_SLASH ;;
+		\") k KEY_LEFTSHIFT KEY_APOSTROPHE ;;
+		\') k KEY_APOSTROPHE ;;
+		\>) k KEY_LEFTSHIFT KEY_DOT ;;
+		\<) k KEY_LEFTSHIFT KEY_COMMA ;;
+		\|) k KEY_LEFTSHIFT KEY_BACKSLASH ;;
+		\[) k KEY_LEFTBRACE ;;
+		\]) k KEY_RIGHTBRACE ;;
+		\{) k KEY_LEFTSHIFT KEY_LEFTBRACE ;;
+		\}) k KEY_LEFTSHIFT KEY_RIGHTBRACE ;;
+		\~) k KEY_LEFTSHIFT KEY_GRAVE ;;
+		\`) k KEY_GRAVE ;;
+		*) die "unmapped character: $c" ;;
+		esac
+	done
+}
+
+# The host firewall commonly drops guest-to-host TCP on the libvirt bridge, so
+# guest code reaches host services through this reverse tunnel at 127.0.0.1.
+cmd_tunnel() {
+	local port=${1:?usage: rig tunnel PORT [TARGET]}
+	exec env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" -N -o ExitOnForwardFailure=yes \
+		-R "$port:${2:-127.0.0.1:$port}" "$(target)"
+}
+
+cmd_doctor() {
+	local fails=0 warns=0
+	ok() { echo "ok    $*"; }
+	warn() {
+		echo "warn  $*"
+		warns=$((warns + 1))
+	}
+	fail() {
+		echo "FAIL  $*"
+		fails=$((fails + 1))
+	}
+	local t
+	for t in virsh ssh scp magick; do
+		command -v "$t" >/dev/null && ok "tool $t" || fail "tool $t missing"
+	done
+	command -v virt-install >/dev/null && ok "tool virt-install" || warn "tool virt-install missing (only rig provision needs it)"
+	command -v xorriso >/dev/null || command -v nix >/dev/null && ok "tool xorriso (or nix shell fallback)" || warn "tool xorriso missing (only rig provision needs it)"
+	[[ -f $RIG_CONFIG ]] && ok "config $RIG_CONFIG" || warn "no config at $RIG_CONFIG, using defaults (rig env)"
+	[[ -f $RIG_KEY ]] && ok "ssh key $RIG_KEY" || fail "ssh key $RIG_KEY missing"
+	v uri >/dev/null 2>&1 && ok "libvirt $RIG_URI" || {
+		fail "cannot connect to $RIG_URI (libvirtd running? user in the libvirt group?)"
+		return 1
+	}
+	local st
+	st=$(state)
+	[[ $st != missing ]] && ok "domain $RIG_DOMAIN ($st)" || {
+		fail "domain $RIG_DOMAIN not defined; see references/provisioning.md"
+		return 1
+	}
+	v snapshot-info "$RIG_DOMAIN" clean >/dev/null 2>&1 && ok "snapshot clean" || warn "no 'clean' snapshot; rig reset will not work"
+	[[ $st == running ]] || {
+		fail "VM is $st; run rig up, then doctor again"
+		return 1
+	}
+	local ip
+	ip=$(guest_ip) && ok "guest IP $ip" || {
+		fail "no guest IP from DHCP lease or ARP"
+		return 1
+	}
+	sshx "$RIG_USER@$ip" 'exit 0' 2>/dev/null && ok "ssh $RIG_USER@$ip" || {
+		fail "ssh $RIG_USER@$ip (key not authorized, or sshd not up yet)"
+		return 1
+	}
+
+	local out
+	out=$(ps_stdin <<'EOF'
+$s = (query user 2>$null) -match 'console\s+\d+\s+Active'
+"desktop=$([bool]$s)"
+$l = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND Name LIKE 'Windows%'" | Select-Object -First 1
+"license=$($l.LicenseStatus) days=$([int]($l.GracePeriodRemaining / 1440)) $($l.Description)"
+EOF
+	)
+	[[ $out == *desktop=True* ]] && ok "interactive console session" || fail "no active console session (autologon failed?)"
+	local lic days
+	lic=$(sed -n 's/^license=\([0-9]*\).*/\1/p' <<<"$out")
+	days=$(sed -n 's/^license=.* days=\([0-9]*\).*/\1/p' <<<"$out")
+	if [[ $lic != 1 ]]; then
+		warn "Windows not licensed (status $lic); eval expired? see references/provisioning.md"
+	elif ((days > 0 && days < 14)); then
+		warn "license expires in $days days"
+	else
+		ok "license ($([[ $days == 0 ]] && echo permanent || echo "$days days left"))"
+	fi
+
+	local probe
+	probe=$(mktemp "${TMPDIR:-/tmp}/rig-XXXXXX")
+	mv "$probe" "$probe.ps1"
+	echo '[Diagnostics.Process]::GetCurrentProcess().SessionId | Set-Content C:\rig\doctor-session.txt' >"$probe.ps1"
+	cmd_run_it --wait "$probe.ps1" >/dev/null 2>&1 || true
+	rm -f "$probe.ps1"
+	out=$(sshx "$RIG_USER@$ip" 'Get-Content C:\rig\doctor-session.txt -ErrorAction SilentlyContinue; Remove-Item C:\rig\doctor-session.txt -ErrorAction SilentlyContinue' | tr -d '\r' || true)
+	[[ $out =~ ^[1-9][0-9]*$ ]] && ok "run-it reaches desktop session $out" || fail "run-it task did not run in a desktop session (got '${out:-nothing}')"
+
+	local shot
+	shot=$(cmd_shot --settle 0 "$(mktemp -u "${TMPDIR:-/tmp}/rig-XXXXXX.png")")
+	is_black "$shot" && fail "screenshot still black after wake" || ok "screenshot $shot"
+
+	out=$(env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" -o ExitOnForwardFailure=yes -R 47999:127.0.0.1:9 "$RIG_USER@$ip" \
+		'(Test-NetConnection 127.0.0.1 -Port 47999 -WarningAction SilentlyContinue).TcpTestSucceeded' 2>/dev/null | tr -d '\r')
+	[[ $out == True ]] && ok "reverse tunnel" || fail "reverse tunnel (sshd AllowTcpForwarding?)"
+
+	echo "doctor: $fails failed, $warns warnings"
+	((fails == 0))
+}
+
+cmd_provision() {
+	local iso='' mem=8192 cpus=6 disk=64 dry=''
+	while (($#)); do
+		case $1 in
+		--iso) iso=$2 && shift ;;
+		--memory) mem=$2 && shift ;;
+		--vcpus) cpus=$2 && shift ;;
+		--disk) disk=$2 && shift ;;
+		--dry-run) dry=1 ;;
+		*) die "unknown provision argument $1" ;;
+		esac
+		shift
+	done
+	[[ -n $iso ]] || die "usage: rig provision --iso PATH [--memory MiB] [--vcpus N] [--disk GiB] [--dry-run]"
+	[[ $(state) == missing ]] || die "domain $RIG_DOMAIN already exists on $RIG_URI"
+	[[ -f $RIG_KEY.pub ]] || die "public key $RIG_KEY.pub missing"
+	[[ $RIG_DOMAIN =~ ^[A-Za-z0-9-]+$ && $RIG_USER =~ ^[A-Za-z0-9-]+$ ]] || die "RIG_DOMAIN and RIG_USER must be [A-Za-z0-9-]"
+	command -v virt-install >/dev/null || die "virt-install missing"
+
+	if [[ ! -f $RIG_CONFIG && -z $dry ]]; then
+		mkdir -p "$(dirname "$RIG_CONFIG")"
+		(
+			umask 077
+			cat >"$RIG_CONFIG" <<EOF
+RIG_URI=$RIG_URI
+RIG_DOMAIN=$RIG_DOMAIN
+RIG_USER=$RIG_USER
+RIG_PASSWORD=Rig-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+RIG_KEY=$RIG_KEY
+RIG_POOL=$RIG_POOL
+RIG_NETWORK=$RIG_NETWORK
+RIG_NOTE="Windows 11 test VM provisioned by rig on $(date +%F)"
+EOF
+		)
+		echo "wrote $RIG_CONFIG"
+		# shellcheck disable=SC1090
+		source "$RIG_CONFIG"
+	fi
+	local password=${RIG_PASSWORD:-Rig-dry-run}
+	[[ $password =~ ^[A-Za-z0-9-]+$ ]] || die "RIG_PASSWORD must be [A-Za-z0-9-] (it is substituted into XML)"
+
+	local work pubkey
+	work=$(mktemp -d "${TMPDIR:-/tmp}/rig-provision-XXXXXX")
+	mkdir "$work/iso"
+	pubkey=$(cut -d' ' -f1,2 "$RIG_KEY.pub")
+	sed -e "s|@COMPUTER_NAME@|${RIG_DOMAIN:0:15}|" -e "s|@USER@|$RIG_USER|g" \
+		-e "s|@PASSWORD@|$password|g" -e "s|@PUBKEY@|$pubkey|" \
+		"$SKILL_DIR/provision/autounattend.xml.in" >"$work/iso/autounattend.xml"
+	local xorriso=(xorriso)
+	command -v xorriso >/dev/null || xorriso=(nix shell nixpkgs#xorriso -c xorriso)
+	"${xorriso[@]}" -as mkisofs -quiet -J -r -V UNATTEND -o "$work/unattend.iso" "$work/iso" 2>/dev/null ||
+		die "building the unattend ISO failed (install xorriso)"
+
+	local unattend_vol="$RIG_DOMAIN-unattend.iso" iso_path
+	if [[ -n $dry ]]; then
+		iso_path=$(readlink -f "$iso")
+	else
+		upload() {
+			v vol-delete --pool "$RIG_POOL" "$2" >/dev/null 2>&1 || true
+			v vol-create-as "$RIG_POOL" "$2" "$(stat -c %s "$1")" --format raw >/dev/null
+			v vol-upload --pool "$RIG_POOL" "$2" "$1"
+		}
+		# libvirt reads install media as its own user, so media outside a pool is
+		# uploaded into it. --iso may also name a volume already in the pool, which
+		# spares a multi-GB upload to a remote host.
+		if iso_path=$(v vol-path "$(readlink -f "$iso")" 2>/dev/null) ||
+			iso_path=$(v vol-path --pool "$RIG_POOL" "$(basename "$iso")" 2>/dev/null); then :; else
+			[[ -f $iso ]] || die "$iso is neither a local file nor a volume in pool $RIG_POOL"
+			echo "uploading $iso into pool $RIG_POOL (one time)..."
+			upload "$iso" "$(basename "$iso")"
+			iso_path=$(v vol-path --pool "$RIG_POOL" "$(basename "$iso")")
+		fi
+		upload "$work/unattend.iso" "$unattend_vol"
+	fi
+
+	# virt-install registers a storage pool for the directory of any path it is
+	# given, even on --dry-run, so the dry run leaves the local unattend ISO out.
+	local unattend_disk=(--disk "vol=$RIG_POOL/$unattend_vol,device=cdrom,bus=sata")
+	[[ -z $dry ]] || unattend_disk=()
+	# SATA disks and an e1000e NIC use inbox Windows drivers, so no virtio ISO is needed.
+	# The unattend file bypasses the TPM check, so no swtpm is needed either.
+	virt-install --connect "$RIG_URI" --name "$RIG_DOMAIN" --osinfo win11 \
+		--memory "$mem" --vcpus "$cpus" --cpu host-passthrough \
+		--boot uefi,hd,cdrom --tpm none \
+		--disk "pool=$RIG_POOL,size=$disk,format=qcow2,bus=sata" \
+		--cdrom "$iso_path" \
+		"${unattend_disk[@]}" \
+		--network "network=$RIG_NETWORK,model=e1000e" \
+		--graphics vnc,listen=127.0.0.1 --video virtio \
+		--noautoconsole --wait 0 ${dry:+--dry-run --print-xml}
+	if [[ -n $dry ]]; then
+		echo "dry run: rendered $work/iso/autounattend.xml and $work/unattend.iso (not attached above)"
+		return
+	fi
+	rm -rf "$work"
+
+	# The Windows ISO's UEFI loader waits ~5 s for "Press any key to boot from CD",
+	# and firmware can take well over 20 s to reach it. Press while the screen is
+	# dark (firmware, prompt, boot logo) and stop once Setup's blue page shows:
+	# there, Enter lands on its Cancel button.
+	local probe
+	probe=$(mktemp "${TMPDIR:-/tmp}/rig-XXXXXX.png")
+	for _ in {1..150}; do
+		capture "$probe" 2>/dev/null && ! is_black "$probe" && break
+		cmd_key KEY_ENTER 2>/dev/null || true
+		sleep 1
+	done
+	rm -f "$probe"
+
+	echo "installing; this usually takes 20-40 minutes (watch with: rig shot)"
+	local deadline=$((SECONDS + 5400)) ip
+	while ((SECONDS < deadline)); do
+		# The install phase powers off at the first reboot instead of rebooting.
+		[[ $(state) == "shut off" ]] && v start "$RIG_DOMAIN" >/dev/null
+		# C:\rig is created by the last first-logon command.
+		if ip=$(guest_ip) && sshx "$RIG_USER@$ip" 'Test-Path C:\rig' 2>/dev/null | command grep -q True; then
+			break
+		fi
+		sleep 20
+	done
+	((SECONDS < deadline)) || die "install did not finish in 90 minutes; inspect with: rig shot"
+
+	cmd_down
+	local tgt
+	for tgt in $(v domblklist "$RIG_DOMAIN" --details | awk '$2 == "cdrom" { print $3 }'); do
+		v change-media "$RIG_DOMAIN" "$tgt" --eject --config >/dev/null || true
+	done
+	# The unattend ISO holds the password in plain text.
+	v vol-delete --pool "$RIG_POOL" "$unattend_vol" >/dev/null
+	cmd_snapshot clean
+	echo "provisioned $RIG_DOMAIN; next: rig up && rig doctor"
+}
+
+# Copies the shut-off VM (disk with its internal snapshots, definition, clean
+# snapshot metadata) to another libvirt host, then writes a config for it here.
+cmd_copy() {
+	local dst=${1:?usage: rig copy DEST_URI [NEW_VM_NAME]} name=${2:-}
+	[[ $dst != "$RIG_URI" ]] || die "DEST_URI is this VM's own host"
+	name=${name:-$(sed -E 's|^qemu\+ssh://([^@/]+@)?([^/.:]+).*|\2|' <<<"$dst")-$RIG_VM}
+	[[ ! -f $VMS_DIR/$name.env ]] || die "config $VMS_DIR/$name.env already exists"
+	[[ $(state) == "shut off" ]] || die "shut the VM down first (rig down)"
+	D() { env -u SSH_AUTH_SOCK virsh -q -c "$dst" "$@"; }
+	D dominfo "$RIG_DOMAIN" >/dev/null 2>&1 && die "$RIG_DOMAIN already defined on $dst"
+
+	local disk vol cap work
+	disk=$(v domblklist "$RIG_DOMAIN" --details | awk '$2 == "disk" { print $4; exit }')
+	vol=$(basename "$disk")
+	cap=$(v vol-info "$disk" --bytes | awk '/^Capacity:/ { print $2 }')
+	# Several GB, so staged on disk rather than in a possibly RAM-backed TMPDIR.
+	work=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/windows-test-rig-copy-XXXXXX")
+	# shellcheck disable=SC2064 # expand $work now
+	trap "rm -rf '$work'" EXIT
+
+	# Host-specific parts are dropped from the domain and from the snapshot's
+	# embedded copy of it: firmware and NVRAM paths (Nix store paths; Windows then
+	# boots through the UEFI fallback loader) and the CPU-vendor-only Hyper-V
+	# features evmcs (Intel) and avic (AMD), which QEMU refuses on the other vendor.
+	strip() { sed -E '/<loader[ >]/d; /<nvram[ >]/d; /<(evmcs|avic) /d'; }
+	v dumpxml --inactive --security-info "$RIG_DOMAIN" | strip >"$work/domain.xml"
+	local snap=''
+	if v snapshot-info "$RIG_DOMAIN" clean >/dev/null 2>&1; then
+		v snapshot-dumpxml "$RIG_DOMAIN" clean --security-info | strip >"$work/clean.xml"
+		snap=1
+	fi
+
+	echo "downloading $disk"
+	v vol-download --sparse "$disk" "$work/$vol"
+	echo "uploading to $dst"
+	D vol-create-as "$RIG_POOL" "$vol" "$cap" --format qcow2 >/dev/null
+	D vol-upload --sparse --pool "$RIG_POOL" "$vol" "$work/$vol"
+	D define "$work/domain.xml" >/dev/null
+	[[ -n $snap ]] && D snapshot-create "$RIG_DOMAIN" "$work/clean.xml" --redefine --current >/dev/null
+
+	sed -e "s|^RIG_URI=.*|RIG_URI=$dst|" -e '/^RIG_NOTE=/d' "$RIG_CONFIG" >"$VMS_DIR/$name.env"
+	echo "RIG_NOTE=\"$RIG_NOTE (copy on ${dst#qemu+ssh://})\"" >>"$VMS_DIR/$name.env"
+	chmod 600 "$VMS_DIR/$name.env"
+	echo "copied $RIG_DOMAIN to $dst; drive it with: rig -v $name up"
+}
+
+cmd_list() {
+	local f
+	shopt -s nullglob
+	for f in "$VMS_DIR"/*.env; do
+		(
+			RIG_URI='' RIG_DOMAIN='' RIG_NOTE=''
+			# shellcheck disable=SC1090
+			source "$f"
+			name=$(basename "$f" .env)
+			st=$(virsh -q -c "${RIG_URI:-qemu:///system}" domstate "${RIG_DOMAIN:-$name}" 2>/dev/null || echo missing)
+			printf '%-16s %-10s %s\n' "$name" "$st" "$RIG_NOTE"
+		)
+	done
+	[[ -n ${f:-} ]] || echo "no VMs in $VMS_DIR; create one: rig -v NAME provision --iso PATH"
+}
+
+cmd=${1:-}
+[[ -n $cmd ]] && shift
+case $cmd in list | -h | --help | help | "") ;; *)
+	[[ -n $RIG_VM ]] || die "several VMs configured; choose one with -v VM (see: rig list)"
+	;;
+esac
+case $cmd in
+list) cmd_list ;;
+env | doctor | provision | copy | authorize | up | down | reset | snapshot | ps | focus | cleanup | shot | key | type | tunnel) "cmd_$cmd" "$@" ;;
+run-it) cmd_run_it "$@" ;;
+ip) guest_ip ;;
+ssh) if (($#)); then sshx "$(target)" "$@"; else sshx -t "$(target)"; fi ;;
+put) put "$@" ;;
+get) scpx "$(target):${1:?usage: rig get REMOTE LOCAL}" "${2:?usage: rig get REMOTE LOCAL}" ;;
+-h | --help | help | "") usage ;;
+*) usage >&2 && exit 2 ;;
+esac

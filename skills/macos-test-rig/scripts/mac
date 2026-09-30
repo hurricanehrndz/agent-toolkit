@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# mac: drive remote macOS test hosts over SSH. See ../SKILL.md.
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+usage: mac <command> [args]
+
+  list                        configured hosts and their notes
+  doctor HOST                 check reachability, OS, screen capture, synthetic input, sudo
+  wake HOST                   wake a sleeping host, retrying for up to 2 minutes
+  ssh HOST [COMMAND]          run COMMAND (interactive shell when none)
+  put HOST LOCAL [REMOTE]     copy to the host (default /tmp/)
+  get HOST REMOTE LOCAL       copy from the host
+  shot HOST [--settle S] OUT  capture the screen to local OUT.png (default settle 1 s)
+  show HOST [--settle S] OUT -- COMMAND
+                              start COMMAND in the background and capture it in the same session
+  key HOST CODE [MOD...]      press a key code; MOD is command, shift, option or control
+  type HOST TEXT              type TEXT with System Events
+
+hosts: one file per host, ~/.config/macos-test-rig/hosts/HOST.env (MAC_HOSTS_DIR overrides)
+EOF
+}
+
+HOSTS_DIR=${MAC_HOSTS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/macos-test-rig/hosts}
+
+die() {
+	echo "mac: $*" >&2
+	exit 1
+}
+
+# Loads HOST.env: MAC_ADDR (required), MAC_USER (default: $USER), MAC_KEY, MAC_NOTE.
+load() {
+	local f="$HOSTS_DIR/${1:?host name required; see: mac list}.env"
+	[[ -f $f ]] || die "no host config $f; see: mac list"
+	MAC_ADDR='' MAC_USER='' MAC_KEY='' MAC_NOTE=''
+	# shellcheck disable=SC1090
+	source "$f"
+	[[ -n $MAC_ADDR ]] || die "MAC_ADDR missing in $f"
+	MAC_USER=${MAC_USER:-$USER}
+	MAC_KEY=${MAC_KEY:-$HOME/.ssh/id_ed25519}
+	TARGET="$MAC_USER@$MAC_ADDR"
+	# A stale forwarded SSH_AUTH_SOCK hangs or burns the server's auth-attempt
+	# limit, so the agent is bypassed and the key pinned.
+	SSH_OPTS=(-o IdentitiesOnly=yes -i "$MAC_KEY" -o PreferredAuthentications=publickey
+		-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR)
+}
+sshx() { env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" "$@"; }
+scpx() { env -u SSH_AUTH_SOCK scp -q "${SSH_OPTS[@]}" "$@"; }
+
+cmd_list() {
+	local f
+	for f in "$HOSTS_DIR"/*.env; do
+		[[ -f $f ]] || {
+			echo "no hosts in $HOSTS_DIR; see SKILL.md"
+			return
+		}
+		load "$(basename "$f" .env)"
+		printf '%-14s %-40s %s\n' "$(basename "$f" .env)" "$TARGET" "$MAC_NOTE"
+	done
+}
+
+# A sleeping Mac accepts the login and then hangs, so each try is time-boxed.
+cmd_wake() {
+	load "$1"
+	getent ahosts "$MAC_ADDR" >/dev/null || die "cannot resolve $MAC_ADDR (off, or not on this network)"
+	local i
+	for i in {1..8}; do
+		timeout 5 bash -c "echo >/dev/tcp/$MAC_ADDR/22" 2>/dev/null || {
+			((i < 4)) || die "$MAC_ADDR:22 unreachable (host down or no route)"
+			sleep 5
+			continue
+		}
+		if timeout 20 env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" "$TARGET" 'caffeinate -u -t 5; echo AWAKE' 2>/dev/null | command grep -q AWAKE; then
+			echo "awake: $TARGET"
+			return
+		fi
+		sleep $((i * 2))
+	done
+	die "$TARGET did not answer within about 2 minutes"
+}
+
+capture_back() {
+	scpx "$TARGET:/tmp/mac-rig-shot.png" "$1"
+	sshx "$TARGET" 'rm -f /tmp/mac-rig-shot.png'
+	echo "$1"
+}
+
+cmd_shot() {
+	load "$1"
+	shift
+	local settle=1
+	[[ ${1:-} == --settle ]] && {
+		settle=$2
+		shift 2
+	}
+	local out=${1:?usage: mac shot HOST [--settle S] OUT.png}
+	sshx "$TARGET" "caffeinate -d -u -t 30 >/dev/null 2>&1 & sleep $settle; screencapture -x /tmp/mac-rig-shot.png"
+	capture_back "$out"
+}
+
+# Separate SSH sessions miss short-lived windows through timing skew, so the
+# launch and the capture share one session.
+cmd_show() {
+	load "$1"
+	shift
+	local settle=5
+	[[ ${1:-} == --settle ]] && {
+		settle=$2
+		shift 2
+	}
+	local out=${1:?usage: mac show HOST [--settle S] OUT.png -- COMMAND}
+	shift
+	[[ ${1:-} == -- ]] && shift
+	(($#)) || die "usage: mac show HOST [--settle S] OUT.png -- COMMAND"
+	sshx "$TARGET" "caffeinate -d -u -t 60 >/dev/null 2>&1 & nohup $* >/tmp/mac-rig-show.log 2>&1 & sleep $settle; screencapture -x /tmp/mac-rig-shot.png"
+	capture_back "$out"
+}
+
+osa() { sshx "$TARGET" "osascript -e $(printf '%q' "$1")"; }
+
+cmd_key() {
+	load "$1"
+	local code=${2:?usage: mac key HOST CODE [MOD...]} mods=()
+	shift 2
+	local m
+	for m in "$@"; do mods+=("$m down"); done
+	local using=''
+	((${#mods[@]})) && using=" using {$(
+		IFS=,
+		echo "${mods[*]}"
+	)}"
+	osa "tell application \"System Events\" to key code $code$using"
+}
+
+cmd_type() {
+	load "$1"
+	local text=${2:?usage: mac type HOST TEXT}
+	text=${text//\\/\\\\}
+	osa "tell application \"System Events\" to keystroke \"${text//\"/\\\"}\""
+}
+
+cmd_doctor() {
+	local fails=0 warns=0 out
+	ok() { echo "ok    $*"; }
+	warn() {
+		echo "warn  $*"
+		warns=$((warns + 1))
+	}
+	fail() {
+		echo "FAIL  $*"
+		fails=$((fails + 1))
+	}
+	load "$1"
+	[[ -f $MAC_KEY ]] && ok "ssh key $MAC_KEY" || fail "ssh key $MAC_KEY missing"
+	(cmd_wake "$1") >/dev/null && ok "reachable $TARGET" || {
+		fail "unreachable $TARGET"
+		return 1
+	}
+	out=$(sshx "$TARGET" 'echo "$(sw_vers -productVersion) $(uname -m) console=$(stat -f %Su /dev/console)"')
+	ok "macOS $out"
+	[[ $out == *"console=$MAC_USER"* ]] || warn "console user is not $MAC_USER; captures and input target another session"
+	local shot
+	shot=$(mktemp -u "${TMPDIR:-/tmp}/mac-XXXXXX.png")
+	if (cmd_shot "$1" --settle 0 "$shot") >/dev/null 2>&1; then
+		ok "screen capture $shot (Read it: only wallpaper and no windows means the recording grant is missing)"
+	else
+		fail "screen capture"
+	fi
+	if timeout 15 env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" "$TARGET" \
+		"osascript -e 'tell application \"System Events\" to count processes'" >/dev/null 2>&1; then
+		ok "synthetic input (System Events)"
+	else
+		warn "synthetic input blocked or awaiting a consent prompt; screenshot the console"
+	fi
+	sshx "$TARGET" 'sudo -n true' >/dev/null 2>&1 && ok "passwordless sudo" || warn "no passwordless sudo; the user runs root steps"
+	echo "doctor: $fails failed, $warns warnings"
+	((fails == 0))
+}
+
+cmd=${1:-}
+[[ -n $cmd ]] && shift
+case $cmd in
+list | doctor | wake | shot | show | key | type) "cmd_$cmd" "$@" ;;
+ssh)
+	load "${1:?usage: mac ssh HOST [COMMAND]}"
+	shift
+	if (($#)); then sshx "$TARGET" "$@"; else sshx -t "$TARGET"; fi
+	;;
+put)
+	load "${1:?usage: mac put HOST LOCAL [REMOTE]}"
+	scpx "${2:?usage: mac put HOST LOCAL [REMOTE]}" "$TARGET:${3:-/tmp/}"
+	;;
+get)
+	load "${1:?usage: mac get HOST REMOTE LOCAL}"
+	scpx "$TARGET:${2:?usage: mac get HOST REMOTE LOCAL}" "${3:?usage: mac get HOST REMOTE LOCAL}"
+	;;
+-h | --help | help | "") usage ;;
+*) usage >&2 && exit 2 ;;
+esac
