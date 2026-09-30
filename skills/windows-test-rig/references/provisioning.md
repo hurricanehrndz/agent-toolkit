@@ -127,6 +127,16 @@ Every host that drives a VM needs, once:
 On NixOS hosts using `nixcfg`, `hrndz.roles.vmHost.windowsTestRig.enable`
 installs the host tools.
 
+## Resizing a VM
+
+With the VM shut off, edit `<memory>`, `<currentMemory>` and `<vcpu>` in
+`virsh dumpxml --inactive` output and `virsh define` it. Give an explicit
+`<topology sockets="1" cores="N" threads="2"/>` inside `<cpu>`, because
+Windows 11 client editions use at most 4 sockets. Then run
+`rig snapshot clean`: a revert restores the definition saved in the snapshot,
+so without a new snapshot the next `rig reset` shrinks the VM back. Leave the
+host at least half its threads and memory.
+
 ## Adopting an existing VM
 
 Write `~/.config/windows-test-rig/vms/NAME.env` by hand with that VM's
