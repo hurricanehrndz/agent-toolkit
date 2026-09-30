@@ -138,7 +138,8 @@ console.log(JSON.stringify(normalized));`,
 		expect(paths.some((path) => path.startsWith("context/"))).toBeTrue();
 		expect(paths.some((path) => path.startsWith("extensions/"))).toBeTrue();
 		expect(paths.some((path) => path.startsWith("skills/"))).toBeTrue();
-		expect(paths).toContain("context/working-style.md");
+		expect(paths).toContain("context/working-style.md.j2");
+		expect(paths.some((path) => path.startsWith("context/dist/")), "rendered context must not be packed").toBeFalse();
 		expect(paths).toContain("extensions/system-prompt/index.ts");
 		expect(paths).toContain("extensions/protected-paths/index.ts");
 		expect(paths).toContain("extensions/custom-footer/index.ts");
