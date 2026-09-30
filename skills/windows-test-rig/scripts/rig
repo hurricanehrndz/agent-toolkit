@@ -154,9 +154,14 @@ cmd_up() {
 cmd_down() {
 	[[ $(state) == "shut off" ]] && return
 	v shutdown "$RIG_DOMAIN" >/dev/null
-	local deadline=$((SECONDS + 180))
+	# Windows can ignore the ACPI request (seen right after first logon, with the
+	# Start menu open and Windows Update busy); a forced in-guest shutdown works.
+	local deadline=$((SECONDS + 180)) forced='' ip
 	while ((SECONDS < deadline)); do
 		[[ $(state) == "shut off" ]] && return
+		if [[ -z $forced ]] && ((SECONDS > deadline - 120)) && ip=$(guest_ip); then
+			sshx "$RIG_USER@$ip" 'shutdown /s /f /t 0' >/dev/null 2>&1 && forced=1
+		fi
 		sleep 3
 	done
 	die "still $(state) after 180 s; force it with: virsh -c $RIG_URI destroy $RIG_DOMAIN"
@@ -484,27 +489,28 @@ EOF
 	"${xorriso[@]}" -as mkisofs -quiet -J -r -V UNATTEND -o "$work/unattend.iso" "$work/iso" 2>/dev/null ||
 		die "building the unattend ISO failed (install xorriso)"
 
-	local unattend_vol="$RIG_DOMAIN-unattend.iso" iso_path
-	if [[ -n $dry ]]; then
-		iso_path=$(readlink -f "$iso")
-	else
-		upload() {
-			v vol-delete --pool "$RIG_POOL" "$2" >/dev/null 2>&1 || true
-			v vol-create-as "$RIG_POOL" "$2" "$(stat -c %s "$1")" --format raw >/dev/null
-			v vol-upload --pool "$RIG_POOL" "$2" "$1"
-		}
-		# libvirt reads install media as its own user, so media outside a pool is
-		# uploaded into it. --iso may also name a volume already in the pool, which
-		# spares a multi-GB upload to a remote host.
-		if iso_path=$(v vol-path "$(readlink -f "$iso")" 2>/dev/null) ||
-			iso_path=$(v vol-path --pool "$RIG_POOL" "$(basename "$iso")" 2>/dev/null); then :; else
-			[[ -f $iso ]] || die "$iso is neither a local file nor a volume in pool $RIG_POOL"
-			echo "uploading $iso into pool $RIG_POOL (one time)..."
-			upload "$iso" "$(basename "$iso")"
-			iso_path=$(v vol-path --pool "$RIG_POOL" "$(basename "$iso")")
+	local unattend_vol="$RIG_DOMAIN-unattend.iso" iso_path=''
+	upload() {
+		v vol-delete --pool "$RIG_POOL" "$2" >/dev/null 2>&1 || true
+		v vol-create-as "$RIG_POOL" "$2" "$(stat -c %s "$1")" --format raw >/dev/null
+		v vol-upload --pool "$RIG_POOL" "$2" "$1"
+	}
+	# libvirt reads install media as its own user, so media outside a pool is
+	# uploaded into it. --iso may also name a volume already in the pool, which
+	# spares a multi-GB upload to a remote host.
+	if iso_path=$(v vol-path "$(readlink -f "$iso")" 2>/dev/null) ||
+		iso_path=$(v vol-path --pool "$RIG_POOL" "$(basename "$iso")" 2>/dev/null); then :; else
+		[[ -f $iso ]] || die "$iso is neither a local file nor a volume in pool $RIG_POOL"
+		if [[ -n $dry ]]; then
+			# A plain path would make virt-install register a pool for its directory.
+			echo "dry run: $iso is not in pool $RIG_POOL yet (a real run uploads it); rendered $work/iso/autounattend.xml, skipped virt-install"
+			return
 		fi
-		upload "$work/unattend.iso" "$unattend_vol"
+		echo "uploading $iso into pool $RIG_POOL (one time)..."
+		upload "$iso" "$(basename "$iso")"
+		iso_path=$(v vol-path --pool "$RIG_POOL" "$(basename "$iso")")
 	fi
+	[[ -n $dry ]] || upload "$work/unattend.iso" "$unattend_vol"
 
 	# virt-install registers a storage pool for the directory of any path it is
 	# given, even on --dry-run, so the dry run leaves the local unattend ISO out.
