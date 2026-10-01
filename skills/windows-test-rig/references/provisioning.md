@@ -6,8 +6,8 @@
 ## 1. Host prerequisites
 
 - libvirt with QEMU/KVM on `qemu:///system`, the `default` network active and
-  set to autostart, and the `default` storage pool active. Your user must be
-  in the `libvirtd` (or `libvirt`) group. On NixOS, set
+  set to autostart, and the `default` storage pool active. Your user must be in
+  the `libvirtd` (or `libvirt`) group. On NixOS, set
   `virtualisation.libvirtd.enable = true;` (OVMF ships by default) and add the
   user to `libvirtd`. Use the `nixos` skill for that change.
 - `virt-install`, `virsh`, `ssh`/`scp`, and ImageMagick `magick`.
@@ -15,9 +15,8 @@
   `nix shell nixpkgs#xorriso`.
 - An SSH key pair. The default is `~/.ssh/id_ed25519`. Only its public half is
   written into the unattend file.
-- About 70 GB free in the pool (a 64 GB sparse disk plus the ISO), 8 GB RAM,
-  and 6 vCPUs to spare. Change the sizes with `--memory`, `--vcpus` and
-  `--disk`.
+- About 70 GB free in the pool (a 64 GB sparse disk plus the ISO), 8 GB RAM, and
+  6 vCPUs to spare. Change the sizes with `--memory`, `--vcpus` and `--disk`.
 
 No swtpm or virtio driver ISO is needed. The unattend file bypasses the TPM,
 Secure Boot and RAM checks, and the VM uses SATA and e1000e, which have inbox
@@ -25,9 +24,9 @@ drivers.
 
 ## 2. Get an ISO
 
-The user downloads it, because it sits behind a form. Get the Windows 11 Enterprise
-evaluation (x64, ISO, English) from the Microsoft Evaluation Center. Any
-Windows 11 x64 ISO works, but a retail ISO needs a product key added to the
+The user downloads it, because it sits behind a form. Get the Windows 11
+Enterprise evaluation (x64, ISO, English) from the Microsoft Evaluation Center.
+Any Windows 11 x64 ISO works, but a retail ISO needs a product key added to the
 unattend file. Image index 1 must be the edition you want, and it is in the
 Enterprise evaluation ISO.
 
@@ -39,12 +38,12 @@ scripts/rig -v win11-test provision --iso ~/Downloads/Win11_Enterprise_Eval.iso
 scripts/rig -v win11-test up && scripts/rig -v win11-test doctor
 ```
 
-The VM name is also the libvirt domain and the Windows computer name, so keep
-it to 15 characters or fewer. If `vms/NAME.env` does not exist, provisioning
-writes it with user `tester`, a generated password, a dated `RIG_NOTE`, and
-mode 0600. To use other values, write the file first. Every VM needs its own
-name. Once the VM exists, update `RIG_NOTE` with what it is for, because
-`rig list` is how agents choose between VMs.
+The VM name is also the libvirt domain and the Windows computer name, so keep it
+to 15 characters or fewer. If `vms/NAME.env` does not exist, provisioning writes
+it with user `tester`, a generated password, a dated `RIG_NOTE`, and mode 0600.
+To use other values, write the file first. Every VM needs its own name. Once the
+VM exists, update `RIG_NOTE` with what it is for, because `rig list` is how
+agents choose between VMs.
 
 What happens:
 
@@ -53,10 +52,10 @@ What happens:
 1. `provision/autounattend.xml.in` is rendered with the names, password and
    public key, then packed into a small ISO that is attached as a second CD
    drive.
-1. `virt-install` starts the VM. The script presses Enter while the console is dark, to catch
-   "Press any key to boot from CD". The saved boot order is disk, then CD, so if
-   the prompt is missed, `virsh destroy` and `virsh start` followed by
-   `rig key KEY_ENTER` presses retry the CD boot.
+1. `virt-install` starts the VM. The script presses Enter while the console is
+   dark, to catch "Press any key to boot from CD". The saved boot order is disk,
+   then CD, so if the prompt is missed, `virsh destroy` and `virsh start`
+   followed by `rig key KEY_ENTER` presses retry the CD boot.
 1. Setup reboots several times. The install config powers off at the first
    reboot, and the script starts the VM again each time.
 1. At first logon the unattend file installs OpenSSH (PowerShell as default
@@ -82,21 +81,22 @@ Start with `rig shot`.
 ## Evaluation expiry
 
 The Enterprise evaluation runs 90 days from install. After that, `rig doctor`
-warns "not licensed (status 5)", the desktop shows "Windows License is
-expired", and Windows shuts down about every hour, which breaks long test
-runs. Reverting to `clean` does not help, because the clock is wall time. The
-fix is to rebuild: `virsh undefine DOMAIN --nvram --snapshots-metadata --storage sda`,
-then provision again from a current ISO. That destroys the VM, so confirm with
-the user first. `slmgr /rearm` exists, but whether it extends an evaluation is
+warns "not licensed (status 5)", the desktop shows "Windows License is expired",
+and Windows shuts down about every hour, which breaks long test runs. Reverting
+to `clean` does not help, because the clock is wall time. The fix is to rebuild:
+`virsh undefine DOMAIN --nvram --snapshots-metadata --storage sda`, then
+provision again from a current ISO. That destroys the VM, so confirm with the
+user first. `slmgr /rearm` exists, but whether it extends an evaluation is
 unverified here.
 
 Do not use `--remove-all-storage` on a VM that still has CD media attached: it
 deletes the attached install ISO from the pool too. `--storage sda` removes only
 the system disk.
+
 ## Another host needs the same VM
 
-Provision once, then copy. That is faster than a second install, and both
-copies expire together, so they are rebuilt together.
+Provision once, then copy. That is faster than a second install, and both copies
+expire together, so they are rebuilt together.
 
 ```bash
 rig -v win11-test down
@@ -104,12 +104,12 @@ rig -v win11-test copy qemu+ssh://USER@OTHERHOST/system   # writes vms/OTHERHOST
 rig -v OTHERHOST-win11-test authorize ~/.ssh/id_ed25519.pub   # only if OTHERHOST's own rig key must drive it too; see below
 ```
 
-`copy` streams the disk (the used size, about 13 GB for a fresh install)
-through this host, defines the domain there, and re-registers the `clean`
-snapshot. It drops everything tied to this host: firmware and NVRAM paths (the
-guest boots through the UEFI fallback loader) and the CPU-vendor-only Hyper-V
-features `evmcs` (Intel) and `avic` (AMD). QEMU refuses to start with the other
-vendor's feature.
+`copy` streams the disk (the used size, about 13 GB for a fresh install) through
+this host, defines the domain there, and re-registers the `clean` snapshot. It
+drops everything tied to this host: firmware and NVRAM paths (the guest boots
+through the UEFI fallback loader) and the CPU-vendor-only Hyper-V features
+`evmcs` (Intel) and `avic` (AMD). QEMU refuses to start with the other vendor's
+feature.
 
 Every host that drives a VM needs, once:
 
@@ -131,11 +131,11 @@ installs the host tools.
 
 With the VM shut off, edit `<memory>`, `<currentMemory>` and `<vcpu>` in
 `virsh dumpxml --inactive` output and `virsh define` it. Give an explicit
-`<topology sockets="1" cores="N" threads="2"/>` inside `<cpu>`, because
-Windows 11 client editions use at most 4 sockets. Then run
-`rig snapshot clean`: a revert restores the definition saved in the snapshot,
-so without a new snapshot the next `rig reset` shrinks the VM back. Leave the
-host at least half its threads and memory.
+`<topology sockets="1" cores="N" threads="2"/>` inside `<cpu>`, because Windows
+11 client editions use at most 4 sockets. Then run `rig snapshot clean`: a
+revert restores the definition saved in the snapshot, so without a new snapshot
+the next `rig reset` shrinks the VM back. Leave the host at least half its
+threads and memory.
 
 ## Adopting an existing VM
 

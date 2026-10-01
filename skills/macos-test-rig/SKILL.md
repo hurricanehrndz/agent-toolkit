@@ -5,9 +5,8 @@ description: Drive remote macOS test hosts over SSH - run commands, copy files, 
 
 # macOS test rig
 
-Remote Macs reached over SSH, all driven through `scripts/mac` (relative to
-this file). Each host is one config file,
-`~/.config/macos-test-rig/hosts/NAME.env`:
+Remote Macs reached over SSH, all driven through `scripts/mac` (relative to this
+file). Each host is one config file, `~/.config/macos-test-rig/hosts/NAME.env`:
 
 ```bash
 MAC_ADDR=192.0.2.10            # IP or hostname (required)
@@ -25,9 +24,9 @@ its note. If none fits the task, ask the user rather than guessing.
 scripts/mac doctor HOST
 ```
 
-It wakes the host and checks the OS and console user, screen capture,
-synthetic input, and sudo. Read the capture it saves: if it shows only
-wallpaper and no windows, the recording grant is missing.
+It wakes the host and checks the OS and console user, screen capture, synthetic
+input, and sudo. Read the capture it saves: if it shows only wallpaper and no
+windows, the recording grant is missing.
 
 ## Commands
 
@@ -45,11 +44,11 @@ wallpaper and no windows, the recording grant is missing.
 - **Launch and capture in one session.** Use `mac show`. A separate `mac ssh`
   followed by `mac shot` misses short-lived windows through timing skew.
 - **Treat a hang as a pending consent prompt.** If `mac key` or `mac type`
-  errors or hangs, TCC is waiting for Accessibility or Automation consent at
-  the console. Screenshot it and ask the user to click Allow.
-- **Only wallpaper in captures means TCC was reset**, usually by a macOS
-  update. The user must re-grant Screen & System Audio Recording to
-  `sshd-session` in System Settings.
+  errors or hangs, TCC is waiting for Accessibility or Automation consent at the
+  console. Screenshot it and ask the user to click Allow.
+- **Only wallpaper in captures means TCC was reset**, usually by a macOS update.
+  The user must re-grant Screen & System Audio Recording to `sshd-session` in
+  System Settings.
 - **Root steps belong to the user.** Without passwordless sudo, stage files in
   `/tmp` and give the user the exact command to run, for example
   `! ssh -t USER@ADDR "sudo installer -pkg /tmp/X.pkg -target /"`.

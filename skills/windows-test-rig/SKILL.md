@@ -5,8 +5,8 @@ description: Drive libvirt Windows 11 test VMs on this host or other Linux hosts
 
 # Windows test rig
 
-Windows 11 VMs under libvirt, driven entirely by `scripts/rig` (relative to
-this file). Each VM autologs on to an interactive desktop, and the host key in
+Windows 11 VMs under libvirt, driven entirely by `scripts/rig` (relative to this
+file). Each VM autologs on to an interactive desktop, and the host key in
 `RIG_KEY` has admin SSH access. A VM on another Linux host has
 `RIG_URI=qemu+ssh://USER@HOST/system`, and guest SSH hops through that host
 automatically, so every command works the same way.
@@ -26,8 +26,8 @@ scripts/rig -v NAME doctor
 Choose the VM by its note. If no note fits the task, ask the user. `doctor`
 checks every layer from libvirt to the desktop session and names the fix for
 each failure. If no VM exists, create one by following
-[references/provisioning.md](references/provisioning.md). If the VM is shut
-off, run `scripts/rig -v NAME up`.
+[references/provisioning.md](references/provisioning.md). If the VM is shut off,
+run `scripts/rig -v NAME up`.
 
 ## Commands
 
@@ -48,18 +48,19 @@ off, run `scripts/rig -v NAME up`.
 
 ## Rules the script cannot enforce
 
-- **Never inline complex PowerShell in `rig ssh`.** The local shell eats `$`
-  and PS 5.1 mangles nested quotes. Put anything with variables, pipes or
-  quotes in a `.ps1` and use `rig ps` or `rig run-it`.
+- **Never inline complex PowerShell in `rig ssh`.** The local shell eats `$` and
+  PS 5.1 mangles nested quotes. Put anything with variables, pipes or quotes in
+  a `.ps1` and use `rig ps` or `rig run-it`.
 - **GUI apps started over SSH are invisible.** They run in the SSH session, not
   on the desktop. Use `rig run-it` for anything you need to see or screenshot.
   It runs as the logged-on user with a standard token. Add `--elevated` only
   when the app must run as admin.
 - **Pass multi-word arguments with an array splat.** In the `.ps1`, write
-  `$a = @('--title', 'Two Words'); & $exe @a`. Both `Start-Process
-  -ArgumentList` and cmd `start ""` split quoted arguments at spaces on PS 5.1.
-- **GUI-subsystem executables return immediately.** To wait for exit and
-  capture stdout over SSH, pipe them: `& $exe @a | Out-String`.
+  `$a = @('--title', 'Two Words'); & $exe @a`. Both
+  `Start-Process -ArgumentList` and cmd `start ""` split quoted arguments at
+  spaces on PS 5.1.
+- **GUI-subsystem executables return immediately.** To wait for exit and capture
+  stdout over SSH, pipe them: `& $exe @a | Out-String`.
 - **Distrust the first screenshot after motion.** Frames captured during a
   scroll, dialog open, or window animation are torn and look like layout bugs.
   Before reporting a visual defect, capture again with `rig shot --settle 5`.
