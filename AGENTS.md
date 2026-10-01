@@ -114,7 +114,9 @@ Add focused `node:test` tests for every ownership or scope change. Test files
 are `*.test.ts`, run by Node's built-in type stripping, so they must use only
 erasable TypeScript syntax and import local TypeScript with a `.ts` extension.
 Keep the production `.mjs` dependency-free and covered by direct Node and
-packed-bin smoke tests. Tests must use temporary homes, never real harness
+packed-bin smoke tests. Do not convert the installer to `.ts`: Node refuses to
+strip types from files under `node_modules`, so a TypeScript bin would fail once
+the package is installed. Tests must use temporary homes, never real harness
 directories.
 
 ## Python web helper
