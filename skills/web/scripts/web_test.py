@@ -536,6 +536,8 @@ class ProcessAndOutputTests(unittest.TestCase):
         original_stdout = sys.stdout
         replacement = None
         try:
+            # cli() closes sys.stdout; give it a stand-in so the real stream stays open.
+            sys.stdout = io.StringIO()
             with mock.patch.object(web, "main", side_effect=BrokenPipeError):
                 self.assertEqual(web.cli(), 0)
                 replacement = sys.stdout
