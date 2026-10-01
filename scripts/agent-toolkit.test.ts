@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync, lstatSync, readlinkSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { dirname, join, relative, resolve } from "node:path";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
 
 import { run } from "./agent-toolkit.mjs";
+import { assertExcludes, assertIncludes } from "./test-support.ts";
 
 let sandbox: string;
 let repoRoot: string;
@@ -62,19 +64,19 @@ function distPath(agent: keyof typeof contextDestinations): string {
 async function capture(callback: () => Promise<number>): Promise<{ code: number; stdout: string; stderr: string }> {
 	let stdout = "";
 	let stderr = "";
-	const out = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+	const out = mock.method(process.stdout, "write", ((chunk: string | Uint8Array) => {
 		stdout += String(chunk);
 		return true;
-	});
-	const err = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+	}) as typeof process.stdout.write);
+	const err = mock.method(process.stderr, "write", ((chunk: string | Uint8Array) => {
 		stderr += String(chunk);
 		return true;
-	});
+	}) as typeof process.stderr.write);
 	try {
 		return { code: await callback(), stdout, stderr };
 	} finally {
-		out.mockRestore();
-		err.mockRestore();
+		out.mock.restore();
+		err.mock.restore();
 	}
 }
 
@@ -96,15 +98,15 @@ describe("agent-toolkit installer", () => {
 		const portable = await addSkill("portable");
 		const piOnly = await addSkill("pi-only", ["pi"]);
 
-		expect(await run(["install", "--home", home], repoRoot)).toBe(0);
+		assert.equal(await run(["install", "--home", home], repoRoot), 0);
 		for (const [agent, relativeRoot] of Object.entries(roots)) {
 			const portableLink = join(home, relativeRoot, "portable");
-			expect(resolve(join(portableLink, ".."), readlinkSync(portableLink))).toBe(portable);
+			assert.equal(resolve(join(portableLink, ".."), readlinkSync(portableLink)), portable);
 			const piLink = join(home, relativeRoot, "pi-only");
 			if (agent === "pi") {
-				expect(resolve(join(piLink, ".."), readlinkSync(piLink))).toBe(piOnly);
+				assert.equal(resolve(join(piLink, ".."), readlinkSync(piLink)), piOnly);
 			} else {
-				expect(existsSync(piLink)).toBeFalse();
+				assert.equal(existsSync(piLink), false);
 			}
 		}
 	});
@@ -117,9 +119,9 @@ describe("agent-toolkit installer", () => {
 			{ args: ["--agent", "pi,prime", "--agent", "codex,claude"], installationHome: join(sandbox, "selected-home") },
 		];
 		for (const { args, installationHome } of cases) {
-			expect(await run(["install", ...args, "--home", installationHome], repoRoot)).toBe(0);
+			assert.equal(await run(["install", ...args, "--home", installationHome], repoRoot), 0);
 			for (const relativeRoot of Object.values(roots)) {
-				expect(lstatSync(join(installationHome, relativeRoot, "example")).isSymbolicLink()).toBeTrue();
+				assert.equal(lstatSync(join(installationHome, relativeRoot, "example")).isSymbolicLink(), true);
 			}
 		}
 	});
@@ -132,29 +134,29 @@ describe("agent-toolkit installer", () => {
 			["--agent", "pi", "--agent", "all"],
 		]) {
 			const result = await capture(() => run(["install", ...args, "--home", home], repoRoot));
-			expect(result.code).toBe(2);
-			expect(result.stderr).toContain('"all" cannot be combined with named agents.');
+			assert.equal(result.code, 2);
+			assertIncludes(result.stderr, '"all" cannot be combined with named agents.');
 		}
 	});
 
 	test("dry-run reports scoped changes without creating roots", async () => {
 		await addSkill("pi-only", ["pi"]);
 		const result = await capture(() => run(["sync", "--dry-run", "--home", home], repoRoot));
-		expect(result.code).toBe(0);
-		expect(result.stdout).toContain("Dry run: 1 change(s) would be made.");
+		assert.equal(result.code, 0);
+		assertIncludes(result.stdout, "Dry run: 1 change(s) would be made.");
 		for (const relativeRoot of Object.values(roots)) {
-			expect(existsSync(join(home, relativeRoot))).toBeFalse();
+			assert.equal(existsSync(join(home, relativeRoot)), false);
 		}
 	});
 
 	test("sync removes a checkout-owned link after its agent scope changes", async () => {
 		const skill = await addSkill("scoped", ["pi", "prime"]);
-		expect(await run(["install", "--home", home], repoRoot)).toBe(0);
+		assert.equal(await run(["install", "--home", home], repoRoot), 0);
 		overrides.scoped = ["pi"];
 		await writeConfig();
-		expect(await run(["sync", "--agent", "prime", "--home", home], repoRoot)).toBe(0);
-		expect(existsSync(join(home, roots.prime, "scoped"))).toBeFalse();
-		expect(resolve(join(home, roots.pi, "scoped/.."), readlinkSync(join(home, roots.pi, "scoped")))).toBe(skill);
+		assert.equal(await run(["sync", "--agent", "prime", "--home", home], repoRoot), 0);
+		assert.equal(existsSync(join(home, roots.prime, "scoped")), false);
+		assert.equal(resolve(join(home, roots.pi, "scoped/.."), readlinkSync(join(home, roots.pi, "scoped"))), skill);
 	});
 
 	test("existing files, directories, and external links are conflicts and are not replaced", async () => {
@@ -167,10 +169,10 @@ describe("agent-toolkit installer", () => {
 		await mkdir(external);
 		await mkdir(join(home, roots.codex), { recursive: true });
 		await symlink(external, destinations[2]!);
-		expect(await run(["sync", "--agent", "pi,prime,codex", "--home", home], repoRoot)).toBe(1);
-		expect(await Bun.file(destinations[0]!).text()).toBe("keep");
-		expect(lstatSync(destinations[1]!).isDirectory()).toBeTrue();
-		expect(readlinkSync(destinations[2]!)).toBe(external);
+		assert.equal(await run(["sync", "--agent", "pi,prime,codex", "--home", home], repoRoot), 1);
+		assert.equal(await readFile(destinations[0]!, "utf8"), "keep");
+		assert.equal(lstatSync(destinations[1]!).isDirectory(), true);
+		assert.equal(readlinkSync(destinations[2]!), external);
 	});
 
 	test("links from a moved checkout conflict and survive sync and uninstall", async () => {
@@ -180,9 +182,9 @@ describe("agent-toolkit installer", () => {
 		await mkdir(oldSkill, { recursive: true });
 		await mkdir(join(home, roots.claude), { recursive: true });
 		await symlink(oldSkill, destination);
-		expect(await run(["sync", "--agent", "claude", "--home", home], repoRoot)).toBe(1);
-		expect(await run(["uninstall", "--agent", "claude", "--home", home], repoRoot)).toBe(0);
-		expect(resolve(join(destination, ".."), readlinkSync(destination))).toBe(oldSkill);
+		assert.equal(await run(["sync", "--agent", "claude", "--home", home], repoRoot), 1);
+		assert.equal(await run(["uninstall", "--agent", "claude", "--home", home], repoRoot), 0);
+		assert.equal(resolve(join(destination, ".."), readlinkSync(destination)), oldSkill);
 	});
 
 	test("sync and uninstall preserve unmanaged and separately managed resources", async () => {
@@ -193,12 +195,12 @@ describe("agent-toolkit installer", () => {
 		await writeFile(join(root, "respec/SKILL.md"), "separate owner");
 		const brokenExternal = join(sandbox, "missing-external");
 		await symlink(brokenExternal, join(root, "external"));
-		expect(await run(["sync", "--agent", "codex", "--home", home], repoRoot)).toBe(0);
-		expect(await run(["uninstall", "--agent", "codex", "--home", home], repoRoot)).toBe(0);
-		expect(await Bun.file(join(root, "file")).text()).toBe("keep");
-		expect(await Bun.file(join(root, "respec/SKILL.md")).text()).toBe("separate owner");
-		expect(readlinkSync(join(root, "external"))).toBe(brokenExternal);
-		expect(existsSync(join(root, "managed"))).toBeFalse();
+		assert.equal(await run(["sync", "--agent", "codex", "--home", home], repoRoot), 0);
+		assert.equal(await run(["uninstall", "--agent", "codex", "--home", home], repoRoot), 0);
+		assert.equal(await readFile(join(root, "file"), "utf8"), "keep");
+		assert.equal(await readFile(join(root, "respec/SKILL.md"), "utf8"), "separate owner");
+		assert.equal(readlinkSync(join(root, "external")), brokenExternal);
+		assert.equal(existsSync(join(root, "managed")), false);
 	});
 
 	test("uninstall removes even deleted-skill links owned by this checkout", async () => {
@@ -206,10 +208,10 @@ describe("agent-toolkit installer", () => {
 		const root = join(home, roots.pi);
 		await mkdir(root, { recursive: true });
 		await symlink(join(repoRoot, "skills/removed"), join(root, "removed"));
-		expect(await run(["install", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(existsSync(join(root, "current"))).toBeFalse();
-		expect(existsSync(join(root, "removed"))).toBeFalse();
+		assert.equal(await run(["install", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.equal(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.equal(existsSync(join(root, "current")), false);
+		assert.equal(existsSync(join(root, "removed")), false);
 	});
 
 	test("recognizes current and broken stale relative links owned by the checkout", async () => {
@@ -219,23 +221,23 @@ describe("agent-toolkit installer", () => {
 		await mkdir(dirname(destination), { recursive: true });
 		await symlink(relative(dirname(destination), skill), destination);
 		await symlink(relative(dirname(stale), join(repoRoot, "skills/removed")), stale);
-		expect(await run(["sync", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(readlinkSync(destination)).toBe(relative(dirname(destination), skill));
-		expect(() => lstatSync(stale)).toThrow();
+		assert.equal(await run(["sync", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.equal(readlinkSync(destination), relative(dirname(destination), skill));
+		assert.throws(() => lstatSync(stale));
 	});
 
 	test("dry-run sync and uninstall report removals without removing links", async () => {
 		await addSkill("scoped", ["prime"]);
-		expect(await run(["install", "--agent", "prime", "--home", home], repoRoot)).toBe(0);
+		assert.equal(await run(["install", "--agent", "prime", "--home", home], repoRoot), 0);
 		const destination = join(home, roots.prime, "scoped");
 		overrides.scoped = ["pi"];
 		await writeConfig();
 		const sync = await capture(() => run(["sync", "--agent", "prime", "--dry-run", "--home", home], repoRoot));
-		expect(sync.stdout).toContain("Dry run: 1 change(s) would be made.");
-		expect(lstatSync(destination).isSymbolicLink()).toBeTrue();
+		assertIncludes(sync.stdout, "Dry run: 1 change(s) would be made.");
+		assert.equal(lstatSync(destination).isSymbolicLink(), true);
 		const uninstall = await capture(() => run(["uninstall", "--agent", "prime", "--dry-run", "--home", home], repoRoot));
-		expect(uninstall.stdout).toContain("Dry run: 1 change(s) would be made.");
-		expect(lstatSync(destination).isSymbolicLink()).toBeTrue();
+		assertIncludes(uninstall.stdout, "Dry run: 1 change(s) would be made.");
+		assert.equal(lstatSync(destination).isSymbolicLink(), true);
 	});
 
 	test("status returns a conflict exit code without changing the destination", async () => {
@@ -244,17 +246,17 @@ describe("agent-toolkit installer", () => {
 		await mkdir(dirname(destination), { recursive: true });
 		await writeFile(destination, "keep");
 		const result = await capture(() => run(["status", "--agent", "pi", "--home", home], repoRoot));
-		expect(result.code).toBe(1);
-		expect(result.stdout).toContain("1 conflicts");
-		expect(await Bun.file(destination).text()).toBe("keep");
+		assert.equal(result.code, 1);
+		assertIncludes(result.stdout, "1 conflicts");
+		assert.equal(await readFile(destination, "utf8"), "keep");
 	});
 
 	test("status considers only skills scoped to the selected agent", async () => {
 		await addSkill("pi-only", ["pi"]);
 		await addSkill("portable");
 		const result = await capture(() => run(["status", "--agent", "prime", "--home", home], repoRoot));
-		expect(result.code).toBe(0);
-		expect(result.stdout).toContain("prime: 0 linked, 1 missing, 0 conflicts");
+		assert.equal(result.code, 0);
+		assertIncludes(result.stdout, "prime: 0 linked, 1 missing, 0 conflicts");
 	});
 
 	test("renders per-agent context and links exact destinations for selected agents", async () => {
@@ -268,41 +270,41 @@ describe("agent-toolkit installer", () => {
 			claude: "# Working style\nParallel.\nEnd.\n",
 		};
 		const allHome = join(sandbox, "all-context-home");
-		expect(await run(["install", "--home", allHome], repoRoot)).toBe(0);
+		assert.equal(await run(["install", "--home", allHome], repoRoot), 0);
 		for (const agent of Object.keys(contextDestinations) as Array<keyof typeof contextDestinations>) {
 			const destination = join(allHome, contextDestinations[agent]);
-			expect(lstatSync(destination).isSymbolicLink()).toBeTrue();
-			expect(resolve(dirname(destination), readlinkSync(destination))).toBe(distPath(agent));
-			expect(await Bun.file(destination).text()).toBe(expected[agent]);
+			assert.equal(lstatSync(destination).isSymbolicLink(), true);
+			assert.equal(resolve(dirname(destination), readlinkSync(destination)), distPath(agent));
+			assert.equal(await readFile(destination, "utf8"), expected[agent]);
 		}
 
 		const selectedHome = join(sandbox, "selected-context-home");
-		expect(await run(["install", "--agent", "pi,codex", "--home", selectedHome], repoRoot)).toBe(0);
+		assert.equal(await run(["install", "--agent", "pi,codex", "--home", selectedHome], repoRoot), 0);
 		for (const agent of ["pi", "codex"] as const) {
-			expect(lstatSync(join(selectedHome, contextDestinations[agent])).isSymbolicLink()).toBeTrue();
+			assert.equal(lstatSync(join(selectedHome, contextDestinations[agent])).isSymbolicLink(), true);
 		}
 		for (const agent of ["prime", "claude"] as const) {
-			expect(existsSync(join(selectedHome, contextDestinations[agent]))).toBeFalse();
+			assert.equal(existsSync(join(selectedHome, contextDestinations[agent])), false);
 		}
 	});
 
 	test("updates rendered context only on sync and is idempotent", async () => {
 		const source = await addContextSource("first\n");
-		expect(await run(["sync", "--agent", "codex", "--home", home], repoRoot)).toBe(0);
+		assert.equal(await run(["sync", "--agent", "codex", "--home", home], repoRoot), 0);
 		const destination = join(home, contextDestinations.codex);
 		await writeFile(source, "second\n");
-		expect(await Bun.file(destination).text()).toBe("first\n");
+		assert.equal(await readFile(destination, "utf8"), "first\n");
 
 		const status = await capture(() => run(["status", "--agent", "codex", "--home", home], repoRoot));
-		expect(status.stdout).toContain(`  context: outdated (${destination})\n`);
+		assertIncludes(status.stdout, `  context: outdated (${destination})\n`);
 		const preview = await capture(() => run(["sync", "--agent", "codex", "--dry-run", "--home", home], repoRoot));
-		expect(preview.stdout).toContain("Dry run: 1 change(s) would be made.");
-		expect(await Bun.file(destination).text()).toBe("first\n");
+		assertIncludes(preview.stdout, "Dry run: 1 change(s) would be made.");
+		assert.equal(await readFile(destination, "utf8"), "first\n");
 
-		expect(await run(["sync", "--agent", "codex", "--home", home], repoRoot)).toBe(0);
-		expect(await Bun.file(destination).text()).toBe("second\n");
+		assert.equal(await run(["sync", "--agent", "codex", "--home", home], repoRoot), 0);
+		assert.equal(await readFile(destination, "utf8"), "second\n");
 		const again = await capture(() => run(["sync", "--agent", "codex", "--dry-run", "--home", home], repoRoot));
-		expect(again.stdout).not.toContain("Dry run:");
+		assertExcludes(again.stdout, "Dry run:");
 	});
 
 	test("sync repoints pre-template context links; install only reports them", async () => {
@@ -313,32 +315,32 @@ describe("agent-toolkit installer", () => {
 		await symlink(relative(dirname(destination), legacy), destination);
 
 		const status = await capture(() => run(["status", "--agent", "claude", "--home", home], repoRoot));
-		expect(status.code).toBe(0);
-		expect(status.stdout).toContain(`  context: outdated (${destination})\n`);
+		assert.equal(status.code, 0);
+		assertIncludes(status.stdout, `  context: outdated (${destination})\n`);
 		const install = await capture(() => run(["install", "--agent", "claude", "--home", home], repoRoot));
-		expect(install.code).toBe(0);
-		expect(install.stdout).toContain("outdated context link");
-		expect(resolve(dirname(destination), readlinkSync(destination))).toBe(legacy);
+		assert.equal(install.code, 0);
+		assertIncludes(install.stdout, "outdated context link");
+		assert.equal(resolve(dirname(destination), readlinkSync(destination)), legacy);
 
 		const preview = await capture(() => run(["sync", "--agent", "claude", "--dry-run", "--home", home], repoRoot));
-		expect(preview.stdout).toContain(`  relink context: ${destination}\n`);
-		expect(resolve(dirname(destination), readlinkSync(destination))).toBe(legacy);
-		expect(await run(["sync", "--agent", "claude", "--home", home], repoRoot)).toBe(0);
-		expect(resolve(dirname(destination), readlinkSync(destination))).toBe(distPath("claude"));
+		assertIncludes(preview.stdout, `  relink context: ${destination}\n`);
+		assert.equal(resolve(dirname(destination), readlinkSync(destination)), legacy);
+		assert.equal(await run(["sync", "--agent", "claude", "--home", home], repoRoot), 0);
+		assert.equal(resolve(dirname(destination), readlinkSync(destination)), distPath("claude"));
 	});
 
 	test("accepts an absent context source without creating context roots", async () => {
 		const result = await capture(() => run(["install", "--home", home], repoRoot));
-		expect(result.code).toBe(0);
+		assert.equal(result.code, 0);
 		for (const relativeDestination of Object.values(contextDestinations)) {
-			expect(existsSync(dirname(join(home, relativeDestination)))).toBeFalse();
+			assert.equal(existsSync(dirname(join(home, relativeDestination))), false);
 		}
-		expect(existsSync(join(repoRoot, "context/dist"))).toBeFalse();
+		assert.equal(existsSync(join(repoRoot, "context/dist")), false);
 	});
 
 	test("status reports linked, missing, and conflicting context separately", async () => {
 		await addContextSource();
-		expect(await run(["install", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
+		assert.equal(await run(["install", "--agent", "pi", "--home", home], repoRoot), 0);
 		const piDestination = join(home, contextDestinations.pi);
 		const conflictDestination = join(home, contextDestinations.codex);
 		await mkdir(dirname(conflictDestination), { recursive: true });
@@ -347,11 +349,11 @@ describe("agent-toolkit installer", () => {
 		const result = await capture(() =>
 			run(["status", "--agent", "pi,prime,codex", "--home", home], repoRoot),
 		);
-		expect(result.code).toBe(1);
-		expect(result.stdout).toContain(`  context: linked (${piDestination})\n`);
-		expect(result.stdout).toContain(`  context: missing (${join(home, contextDestinations.prime)})\n`);
-		expect(result.stdout).toContain(`  context: conflict (${conflictDestination})\n`);
-		expect(await Bun.file(conflictDestination).text()).toBe("keep");
+		assert.equal(result.code, 1);
+		assertIncludes(result.stdout, `  context: linked (${piDestination})\n`);
+		assertIncludes(result.stdout, `  context: missing (${join(home, contextDestinations.prime)})\n`);
+		assertIncludes(result.stdout, `  context: conflict (${conflictDestination})\n`);
+		assert.equal(await readFile(conflictDestination, "utf8"), "keep");
 	});
 
 	test("preserves every context destination not owned by the current checkout", async () => {
@@ -376,13 +378,13 @@ describe("agent-toolkit installer", () => {
 		await symlink(moved, destinations.claude);
 
 		for (const command of ["install", "sync"] as const) {
-			expect((await capture(() => run([command, "--home", home], repoRoot))).code).toBe(1);
+			assert.equal((await capture(() => run([command, "--home", home], repoRoot))).code, 1);
 		}
-		expect(await run(["uninstall", "--home", home], repoRoot)).toBe(0);
-		expect(await Bun.file(destinations.pi).text()).toBe("keep file");
-		expect(lstatSync(destinations.prime).isDirectory()).toBeTrue();
-		expect(readlinkSync(destinations.codex)).toBe(external);
-		expect(readlinkSync(destinations.claude)).toBe(moved);
+		assert.equal(await run(["uninstall", "--home", home], repoRoot), 0);
+		assert.equal(await readFile(destinations.pi, "utf8"), "keep file");
+		assert.equal(lstatSync(destinations.prime).isDirectory(), true);
+		assert.equal(readlinkSync(destinations.codex), external);
+		assert.equal(readlinkSync(destinations.claude), moved);
 	});
 
 	test("does not own links to the template source itself", async () => {
@@ -390,9 +392,9 @@ describe("agent-toolkit installer", () => {
 		const destination = join(home, contextDestinations.pi);
 		await mkdir(dirname(destination), { recursive: true });
 		await symlink(source, destination);
-		expect((await capture(() => run(["sync", "--agent", "pi", "--home", home], repoRoot))).code).toBe(1);
-		expect(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(readlinkSync(destination)).toBe(source);
+		assert.equal((await capture(() => run(["sync", "--agent", "pi", "--home", home], repoRoot))).code, 1);
+		assert.equal(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.equal(readlinkSync(destination), source);
 	});
 
 	test("recognizes relative owned context links and removes them after source deletion", async () => {
@@ -408,18 +410,18 @@ describe("agent-toolkit installer", () => {
 		const syncPreview = await capture(() =>
 			run(["sync", "--agent", "pi", "--dry-run", "--home", home], repoRoot),
 		);
-		expect(syncPreview.stdout).toContain("Dry run: 1 change(s) would be made.");
-		expect(lstatSync(join(home, contextDestinations.pi)).isSymbolicLink()).toBeTrue();
-		expect(await run(["sync", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(() => lstatSync(join(home, contextDestinations.pi))).toThrow();
+		assertIncludes(syncPreview.stdout, "Dry run: 1 change(s) would be made.");
+		assert.equal(lstatSync(join(home, contextDestinations.pi)).isSymbolicLink(), true);
+		assert.equal(await run(["sync", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.throws(() => lstatSync(join(home, contextDestinations.pi)));
 
 		const uninstallPreview = await capture(() =>
 			run(["uninstall", "--agent", "prime", "--dry-run", "--home", home], repoRoot),
 		);
-		expect(uninstallPreview.stdout).toContain("Dry run: 1 change(s) would be made.");
-		expect(lstatSync(join(home, contextDestinations.prime)).isSymbolicLink()).toBeTrue();
-		expect(await run(["uninstall", "--agent", "prime", "--home", home], repoRoot)).toBe(0);
-		expect(() => lstatSync(join(home, contextDestinations.prime))).toThrow();
+		assertIncludes(uninstallPreview.stdout, "Dry run: 1 change(s) would be made.");
+		assert.equal(lstatSync(join(home, contextDestinations.prime)).isSymbolicLink(), true);
+		assert.equal(await run(["uninstall", "--agent", "prime", "--home", home], repoRoot), 0);
+		assert.throws(() => lstatSync(join(home, contextDestinations.prime)));
 	});
 
 	test("context dry-run counts render and link without writing anything", async () => {
@@ -428,9 +430,9 @@ describe("agent-toolkit installer", () => {
 		const result = await capture(() =>
 			run(["sync", "--agent", "claude", "--dry-run", "--home", home], repoRoot),
 		);
-		expect(result.stdout).toContain("Dry run: 2 change(s) would be made.");
-		expect(existsSync(dirname(destination))).toBeFalse();
-		expect(existsSync(join(repoRoot, "context/dist"))).toBeFalse();
+		assertIncludes(result.stdout, "Dry run: 2 change(s) would be made.");
+		assert.equal(existsSync(dirname(destination)), false);
+		assert.equal(existsSync(join(repoRoot, "context/dist")), false);
 	});
 
 	test("a context-free checkout preserves links owned by another checkout", async () => {
@@ -441,9 +443,9 @@ describe("agent-toolkit installer", () => {
 		await mkdir(dirname(destination), { recursive: true });
 		await symlink(personalSource, destination);
 
-		expect(await run(["sync", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot)).toBe(0);
-		expect(readlinkSync(destination)).toBe(personalSource);
+		assert.equal(await run(["sync", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.equal(await run(["uninstall", "--agent", "pi", "--home", home], repoRoot), 0);
+		assert.equal(readlinkSync(destination), personalSource);
 	});
 
 	test("rejects invalid context sources before any mutation", async () => {
@@ -464,10 +466,10 @@ describe("agent-toolkit installer", () => {
 				await symlink(target, contextSource);
 			}
 			const result = await capture(() => run(["install", "--agent", "pi", "--home", home], repoRoot));
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("context/working-style.md.j2: must be a regular file");
-			expect(existsSync(join(home, roots.pi))).toBeFalse();
-			expect(existsSync(join(home, contextDestinations.pi))).toBeFalse();
+			assert.equal(result.code, 1);
+			assertIncludes(result.stderr, "context/working-style.md.j2: must be a regular file");
+			assert.equal(existsSync(join(home, roots.pi)), false);
+			assert.equal(existsSync(join(home, contextDestinations.pi)), false);
 			if (server !== undefined) {
 				await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 			}
@@ -488,10 +490,10 @@ describe("agent-toolkit installer", () => {
 		for (const [template, message] of invalidTemplates) {
 			await addContextSource(template);
 			const result = await capture(() => run(["sync", "--home", home], repoRoot));
-			expect(result.code, template).toBe(1);
-			expect(result.stderr).toContain(`context/working-style.md.j2: ${message}`);
-			expect(existsSync(join(home, roots.pi))).toBeFalse();
-			expect(existsSync(join(repoRoot, "context/dist"))).toBeFalse();
+			assert.equal(result.code, 1, template);
+			assertIncludes(result.stderr, `context/working-style.md.j2: ${message}`);
+			assert.equal(existsSync(join(home, roots.pi)), false);
+			assert.equal(existsSync(join(repoRoot, "context/dist")), false);
 		}
 	});
 
@@ -499,30 +501,30 @@ describe("agent-toolkit installer", () => {
 		await addSkill("valid");
 		await writeFile(join(repoRoot, "skills/valid/SKILL.md"), "---\nname: wrong\ndescription: mismatch\n---\n");
 		const frontmatter = await capture(() => run(["install", "--home", home], repoRoot));
-		expect(frontmatter.stderr).toContain("frontmatter name must match");
-		expect(existsSync(join(home, roots.pi))).toBeFalse();
+		assertIncludes(frontmatter.stderr, "frontmatter name must match");
+		assert.equal(existsSync(join(home, roots.pi)), false);
 
 		await writeFile(join(repoRoot, "skills/valid/SKILL.md"), "---\nname: valid\ndescription: valid skill metadata\n---\n");
 		await writeFile(join(repoRoot, "agent-toolkit.json"), "{broken");
 		const malformed = await capture(() => run(["install", "--home", home], repoRoot));
-		expect(malformed.stderr).toContain("invalid JSON");
-		expect(existsSync(join(home, roots.pi))).toBeFalse();
+		assertIncludes(malformed.stderr, "invalid JSON");
+		assert.equal(existsSync(join(home, roots.pi)), false);
 	});
 
 	test("requires exactly the skills top-level config key but accepts partial inventories", async () => {
 		await addSkill("valid");
 		await writeConfig({ skills: {}, extra: true });
 		const extra = await capture(() => run(["validate"], repoRoot));
-		expect(extra.stderr).toContain('unknown top-level key "extra"');
-		expect(extra.stderr).not.toContain("is not configured");
+		assertIncludes(extra.stderr, 'unknown top-level key "extra"');
+		assertExcludes(extra.stderr, "is not configured");
 		await writeConfig({});
-		expect((await capture(() => run(["validate"], repoRoot))).stderr).toContain("skills must be an object");
+		assertIncludes((await capture(() => run(["validate"], repoRoot))).stderr, "skills must be an object");
 	});
 
 	test("rejects whitespace descriptions and duplicate YAML frontmatter keys", async () => {
 		await addSkill("valid");
 		await writeFile(join(repoRoot, "skills/valid/SKILL.md"), "---\nname: valid\ndescription: '   '\n---\n");
-		expect((await capture(() => run(["validate"], repoRoot))).stderr).toContain("description is required");
+		assertIncludes((await capture(() => run(["validate"], repoRoot))).stderr, "description is required");
 
 		for (const duplicate of ["name: other", "description: second"]) {
 			await writeFile(
@@ -530,8 +532,8 @@ describe("agent-toolkit installer", () => {
 				`---\nname: valid\ndescription: first\n${duplicate}\n---\n`,
 			);
 			const result = await capture(() => run(["validate"], repoRoot));
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("duplicate top-level key");
+			assert.equal(result.code, 1);
+			assertIncludes(result.stderr, "duplicate top-level key");
 		}
 	});
 
@@ -598,8 +600,8 @@ description: first
 		for (const document of invalidDocuments) {
 			await writeFile(join(repoRoot, "skills/valid/SKILL.md"), document);
 			const result = await capture(() => run(["validate"], repoRoot));
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("invalid YAML frontmatter");
+			assert.equal(result.code, 1);
+			assertIncludes(result.stderr, "invalid YAML frontmatter");
 		}
 
 		await writeFile(
@@ -610,7 +612,7 @@ description: "Use this: safely."
 ---
 `,
 		);
-		expect(await run(["validate"], repoRoot)).toBe(0);
+		assert.equal(await run(["validate"], repoRoot), 0);
 	});
 
 	test("rejects duplicate JSON object keys at every nesting level", async () => {
@@ -623,8 +625,8 @@ description: "Use this: safely."
 		for (const document of documents) {
 			await writeFile(join(repoRoot, "agent-toolkit.json"), document);
 			const result = await capture(() => run(["validate"], repoRoot));
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("duplicate object key");
+			assert.equal(result.code, 1);
+			assertIncludes(result.stderr, "duplicate object key");
 		}
 	});
 
@@ -633,31 +635,31 @@ description: "Use this: safely."
 		await addSkill("scalar");
 		await writeConfig({ skills: { valid: ["pi", "pi", "unknown"], scalar: "pi", empty: [], missing: ["pi"] } });
 		const result = await capture(() => run(["install", "--home", home], repoRoot));
-		expect(result.code).toBe(1);
-		expect(result.stderr).toContain('lists agent "pi" more than once');
-		expect(result.stderr).toContain("has unknown agent");
-		expect(result.stderr).toContain("must have an agent array");
-		expect(result.stderr).toContain("must have at least one agent");
-		expect(result.stderr).toContain('configured skill "missing" is missing');
+		assert.equal(result.code, 1);
+		assertIncludes(result.stderr, 'lists agent "pi" more than once');
+		assertIncludes(result.stderr, "has unknown agent");
+		assertIncludes(result.stderr, "must have an agent array");
+		assertIncludes(result.stderr, "must have at least one agent");
+		assertIncludes(result.stderr, 'configured skill "missing" is missing');
 		for (const relativeRoot of Object.values(roots)) {
-			expect(existsSync(join(home, relativeRoot))).toBeFalse();
+			assert.equal(existsSync(join(home, relativeRoot)), false);
 		}
 	});
 });
 
 describe("package ownership", () => {
 	test("all checked-in skill metadata satisfies the flat frontmatter contract", async () => {
-		const actualRepo = resolve(import.meta.dir, "..");
+		const actualRepo = resolve(import.meta.dirname, "..");
 		const result = await capture(() => run(["validate"], actualRepo));
-		expect(result.code).toBe(0);
-		expect(result.stderr).toBe("");
+		assert.equal(result.code, 0);
+		assert.equal(result.stderr, "");
 	});
 
 	test("the repository package exposes the installer and does not also deliver Pi skills", async () => {
-		const manifest = await Bun.file(join(import.meta.dir, "../package.json")).json();
-		expect(manifest.bin).toEqual({ "agent-toolkit": "./scripts/agent-toolkit.mjs" });
-		expect(manifest.engines).toEqual({ node: ">=24.14.1" });
-		expect(manifest.pi.extensions).toEqual(["./extensions"]);
-		expect(manifest.pi.skills).toBeUndefined();
+		const manifest = JSON.parse(await readFile(join(import.meta.dirname, "../package.json"), "utf8"));
+		assert.deepEqual(manifest.bin, { "agent-toolkit": "./scripts/agent-toolkit.mjs" });
+		assert.deepEqual(manifest.engines, { node: ">=24.14.1" });
+		assert.deepEqual(manifest.pi.extensions, ["./extensions"]);
+		assert.equal(manifest.pi.skills, undefined);
 	});
 });

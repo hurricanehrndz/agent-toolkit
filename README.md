@@ -1,8 +1,8 @@
 # agent-toolkit
 
 A one-stop shop for [pi.dev](https://pi.dev) extensions, portable Agent Skills,
-and personal global agent context. The production installer runs on Node 24; Bun
-remains the development test runner.
+and personal global agent context. The installer, tests, and development tooling
+all run on Node 24.
 
 ## Resources and ownership
 
@@ -47,9 +47,9 @@ Every discovered skill defaults to all four agents. The optional
   development environment.
 - [uv](https://docs.astral.sh/uv/) for the executable web helper, which is
   pinned to CPython 3.14.7 and otherwise uses only the standard library.
-- [Node.js](https://nodejs.org) 24.14.1 for the dependency-free skill installer.
-- [Bun](https://bun.sh) 1.3.13 for development dependencies, TypeScript tooling,
-  tests, and personal Pi extensions.
+- [Node.js](https://nodejs.org) 24.14.1 for the dependency-free skill installer,
+  and with its bundled npm for development dependencies, TypeScript tooling, and
+  tests.
 - Git for cloning `respec`; its locked Go and just versions are installed by
   mise during `mise run toolkit:sync`.
 - [Pi](https://pi.dev), when using the Pi-only extensions or the `review` and
@@ -191,7 +191,7 @@ Use the repository's mise tasks rather than selecting runtimes directly:
 mise run fmt              # Format repository-authored root and skill Markdown
 mise run typecheck        # Type-check Python and TypeScript
 mise run toolkit:validate # Validate skills, optional context, and scope overrides
-mise run test             # Run the Python and Bun suites
+mise run test             # Run the Python and Node suites
 mise run check            # Run the complete repository gate
 mise run hooks:install    # Explicitly install pre-commit hooks
 ```
@@ -231,8 +231,7 @@ Extensions remain Pi-only package resources.
 
 | Tool | Role |
 | -- | -- |
-| Node.js 24.14.1 | Dependency-free installer runtime |
-| Bun 1.3.13 | Development package manager and TypeScript test runner |
+| Node.js 24.14.1 | Installer runtime, npm package manager, and `node --test` runner |
 | TypeScript | Pi extensions and development tests |
 | Python standard library | Portable web helper |
 | Agent Skills | Cross-harness skill format |

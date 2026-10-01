@@ -27,7 +27,7 @@ explicit decision.
 | Concern | Tool |
 | -- | -- |
 | Production installer runtime | Node.js 24.14.1 |
-| Development package manager/tests | Bun 1.3.13 |
+| Development package manager/tests | npm (bundled with Node) and `node --test` |
 | Portable web helper | CPython 3.14.7 standard library, selected by its executable uv-script entry point |
 | Development tasks | mise (`mise run …`) with `settings.locked = true` |
 | Personal respec install | Git plus respec's locked mise tools through `mise run toolkit:sync` |
@@ -41,13 +41,13 @@ Use `mise run setup`, `mise run fmt`, `mise run typecheck`, `mise run test`, and
 `~/src/me/respec` when absent, runs `mise install`, then runs
 `mise exec -- just install` there. Its dry run must not clone, install tools,
 build, or install. Additive-only `install` remains a direct CLI/bin command and
-has no mise alias. Use npm only for local package/bin smoke tests; never add an
-installer runtime dependency. Do not add runtime Python packages for the web
-helper; the root mypy/mdformat packages are development only. Pi peer packages
-provide types and must not be bundled. When intentionally refreshing Python
-dependencies, keep public resolution explicit with
-`UV_DEFAULT_INDEX=https://pypi.org/simple uv lock --python 3.14.7`, then inspect
-the lock before committing it.
+has no mise alias. npm installs development dependencies from
+`package-lock.json`; never add an installer runtime dependency. Do not add
+runtime Python packages for the web helper; the root mypy/mdformat packages are
+development only. Pi peer packages provide types and must not be bundled. When
+intentionally refreshing Python dependencies, keep public resolution explicit
+with `UV_DEFAULT_INDEX=https://pypi.org/simple uv lock --python 3.14.7`, then
+inspect the lock before committing it.
 
 First-time repository setup is:
 
@@ -110,9 +110,12 @@ Keep installer behavior aligned with its ownership-safe design:
 - all config, frontmatter, and context-source validation happens before any
   mutation.
 
-Add focused Bun tests for every ownership or scope change. Keep the production
-`.mjs` dependency-free and covered by direct Node and packed-bin smoke tests.
-Tests must use temporary homes, never real harness directories.
+Add focused `node:test` tests for every ownership or scope change. Test files
+are `*.test.ts`, run by Node's built-in type stripping, so they must use only
+erasable TypeScript syntax and import local TypeScript with a `.ts` extension.
+Keep the production `.mjs` dependency-free and covered by direct Node and
+packed-bin smoke tests. Tests must use temporary homes, never real harness
+directories.
 
 ## Python web helper
 
@@ -171,9 +174,9 @@ git diff --check
 
 Use the narrower `mise run fmt`, `mise run typecheck`,
 `mise run toolkit:validate`, and `mise run test` tasks while iterating.
-`mise run setup` installs only the Bun and uv lockfiles; mise separately pins
-the Node production runtime. `mise run hooks:install` is an explicit, separate
-mutation and must not be folded into setup or checks.
+`mise run setup` installs only the npm and uv lockfiles; mise pins the Node
+runtime that runs the installer, npm, and the tests. `mise run hooks:install` is
+an explicit, separate mutation and must not be folded into setup or checks.
 
 Do not use live Pi sessions or real harness homes for automated checks.
 

@@ -93,7 +93,6 @@ class ArgumentTests(unittest.TestCase):
         self.assertEqual(
             mise["tools"],
             {
-                "bun": "1.3.13",
                 "node": "24.14.1",
                 "python": "3.14.7",
                 "uv": "0.11.21",
