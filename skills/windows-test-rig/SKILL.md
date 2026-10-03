@@ -69,7 +69,9 @@ run `scripts/rig -v NAME up`.
   unreliable.
 
 Keyboard names, browser-in-guest checks and other GUI-driving details are in
-[references/gui-driving.md](references/gui-driving.md).
+[references/gui-driving.md](references/gui-driving.md). Running tests as SYSTEM,
+safe toolchain locations, and Go test and race-detector setup are in
+[references/native-testing.md](references/native-testing.md).
 
 ## Where project workflows live
 
