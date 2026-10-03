@@ -127,6 +127,59 @@ Every host that drives a VM needs, once:
 On NixOS hosts using `nixcfg`, `hrndz.roles.vmHost.windowsTestRig.enable`
 installs the host tools.
 
+## A specialized VM on the same host
+
+Give long-lived toolchains (Go, compilers, test users) their own VM instead of
+extra snapshots on a generic one. A generic VM booted with `rig up` but not
+reset comes up in its current snapshot, so an extra snapshot changes the default
+state for everyone. `rig copy` only targets another host, so clone by hand on
+the libvirt host. Prepare the source VM, take a temporary snapshot
+(`rig -v SRC down && rig -v SRC snapshot prepared`), then on the libvirt host:
+
+```bash
+I=/var/lib/libvirt/images N=/var/lib/libvirt/qemu/nvram
+sudo qemu-img convert -p -l snapshot.name=prepared -O qcow2 $I/SRC.qcow2 $I/NEW.qcow2
+virt-clone --connect qemu:///system --original SRC --name NEW --file $I/NEW.qcow2 --preserve-data
+sudo cp -p $N/SRC_VARS.fd $N/NEW_VARS.fd   # virt-clone does not copy NVRAM
+```
+
+`qemu-img convert -l` flattens one internal snapshot into a standalone disk.
+`virt-clone --preserve-data` defines a new domain with a new UUID and MAC on
+that disk. Copying the NVRAM keeps the Windows boot entries.
+
+Then, on this host:
+
+1. Copy `vms/SRC.env` to `vms/NEW.env`, set `RIG_DOMAIN=NEW` and a `RIG_NOTE`
+   that names the toolchains, and `chmod 600` it.
+1. Run `rig -v NEW up`, then rename the guest so logs and `whoami` cannot be
+   confused with the source: a `.ps1` with
+   `Rename-Computer -NewName NEW -Force; Restart-Computer -Force`.
+1. Finish with `rig -v NEW down && rig -v NEW snapshot clean`.
+1. Return the source to its baseline with `rig -v SRC reset`, then
+   `rig -v SRC down` and `virsh snapshot-delete SRC prepared`.
+
+The clone shares the source's evaluation expiry, machine SID and SSH host key.
+That is fine on the private libvirt network; rebuild both when the evaluation
+expires.
+
+## A standard (non-admin) user
+
+Tests that prove an ordinary user cannot do something need a real non-admin
+account. Create it once, before the `clean` snapshot. Keep its password only in
+the VM config, as `RIG_STD_USER` and `RIG_STD_PASSWORD`, next to `RIG_PASSWORD`.
+Generate the password into the config file and a self-deleting guest script, and
+never print it:
+
+```bash
+pw="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)Aa1!"
+printf '%s\n' 'RIG_STD_USER=stduser' "RIG_STD_PASSWORD='$pw'" >> ~/.config/windows-test-rig/vms/NEW.env
+```
+
+Pass `$pw` to a `.ps1` that runs `New-LocalUser` with
+`-PasswordNeverExpires -AccountNeverExpires`, adds the user to `Users` only, and
+ends with `Remove-Item $PSCommandPath`. `net user NAME PASS /add` prompts and
+fails over SSH for passwords longer than 14 characters.
+
 ## Resizing a VM
 
 With the VM shut off, edit `<memory>`, `<currentMemory>` and `<vcpu>` in

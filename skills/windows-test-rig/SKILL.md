@@ -23,11 +23,12 @@ scripts/rig list
 scripts/rig -v NAME doctor
 ```
 
-Choose the VM by its note. If no note fits the task, ask the user. `doctor`
-checks every layer from libvirt to the desktop session and names the fix for
-each failure. If no VM exists, create one by following
-[references/provisioning.md](references/provisioning.md). If the VM is shut off,
-run `scripts/rig -v NAME up`.
+Choose the VM by its note. Prefer a specialized VM, for example one whose note
+lists a Go toolchain, over installing tools on a generic one. If no note fits
+the task, ask the user. `doctor` checks every layer from libvirt to the desktop
+session and names the fix for each failure. If no VM exists, create one by
+following [references/provisioning.md](references/provisioning.md). If the VM is
+shut off, run `scripts/rig -v NAME up`.
 
 ## Commands
 
@@ -64,6 +65,13 @@ run `scripts/rig -v NAME up`.
 - **Distrust the first screenshot after motion.** Frames captured during a
   scroll, dialog open, or window animation are torn and look like layout bugs.
   Before reporting a visual defect, capture again with `rig shot --settle 5`.
+- **Never print a password.** `RIG_PASSWORD` and `RIG_STD_PASSWORD` live only in
+  the 0600 VM config. Copy them into a guest script without echoing them, and
+  delete the script afterwards.
+- **Keep extra snapshots off generic VMs.** `rig up` without a reset boots the
+  current snapshot, and `rig snapshot` with no name replaces `clean`. Clone a
+  specialized VM instead; see
+  [references/provisioning.md](references/provisioning.md#a-specialized-vm-on-the-same-host).
 - **Keys go to the focused window.** If a screenshot shows another window in
   front, run `rig focus` before sending keys. Alt+Tab through `rig key` is
   unreliable.

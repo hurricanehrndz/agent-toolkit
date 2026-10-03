@@ -17,6 +17,17 @@ Get-Content C:\ck\out.txt
 
 Name tasks `rig-*` so `rig cleanup` removes leftovers.
 
+## Running as a standard user
+
+A VM whose config defines `RIG_STD_USER` and `RIG_STD_PASSWORD` has a non-admin
+local account (see
+[provisioning.md](provisioning.md#a-standard-non-admin-user)). Read the values
+from `~/.config/windows-test-rig/vms/NAME.env` into the guest script you
+`rig put`, and never echo them. A test that runs as SYSTEM or as the admin can
+then call `LogonUserW` (interactive logon) and impersonate the token on a locked
+OS thread. Check the token's group list for Administrators rather than calling
+`CheckTokenMembership`, which needs an impersonation token.
+
 ## Where to put toolchains and sources
 
 SYSTEM must not execute anything a standard user can modify. On a default
