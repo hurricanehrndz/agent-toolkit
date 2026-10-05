@@ -100,11 +100,12 @@ mise run toolkit:sync
 ```
 
 `toolkit:sync` reconciles both resource types. It installs expected links and
-removes stale links owned by this checkout. It also clones
-`https://github.com/hurricanehrndz/respec` to `~/src/me/respec` when absent,
-runs `mise install`, then runs `mise exec -- just install` from that checkout.
-Pass `--dry-run` to preview both parts without cloning, installing tools,
-building, or installing. The resource CLI uses these eight fixed destinations:
+removes stale links owned by this checkout. It also manages the Respec checkout
+at `~/src/me/respec`: cloning it when absent, fast-forwarding it when clean, and
+leaving it at its current revision when dirty. It then runs `mise install` and
+`mise exec -- just install` from that checkout. Pass `--dry-run` to preview both
+parts without cloning, pulling, installing tools, building, or installing. The
+resource CLI uses these eight fixed destinations:
 
 | Agent | Skills | Global context |
 | -- | -- | -- |
