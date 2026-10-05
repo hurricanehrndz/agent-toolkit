@@ -1,8 +1,8 @@
 # agent-toolkit
 
 A one-stop shop for [pi.dev](https://pi.dev) extensions, portable Agent Skills,
-and personal global agent context. The production installer runs on Node 24; Bun
-remains the development test runner.
+and personal global agent context. The installer, tests, and development tooling
+all run on Node 24.
 
 ## Resources and ownership
 
@@ -10,7 +10,7 @@ remains the development test runner.
 | -- | -- | -- |
 | `extensions/` | The `agent-toolkit` Pi package (`package.json` → `pi.extensions`) | Pi only |
 | `skills/` | Per-skill symlinks managed only by `scripts/agent-toolkit.mjs`; optional `agent-toolkit.json` overrides the default scope | All four agents by default, with per-skill exceptions |
-| `context/working-style.md` | One fixed global-context symlink per agent, managed by the same CLI | All four agents when the source file exists |
+| `context/working-style.md.j2` | Rendered per agent into gitignored `context/dist/<agent>.md` on install/sync, with one fixed global-context symlink per agent | All four agents when the template exists |
 
 The package and installer deliberately do not both own Pi skill installation.
 
@@ -28,11 +28,13 @@ The package and installer deliberately do not both own Pi skill installation.
 | -- | -- | -- |
 | [bro](skills/bro/SKILL.md) | Pi, Prime, Codex, Claude | Restates the previous message in concise, jargon-free language |
 | [diagrams](skills/diagrams/SKILL.md) | Pi, Prime, Codex, Claude | Renders diagrams as PNGs with Python `diagrams` or Mermaid, chosen by each tool's strengths |
+| [macos-test-rig](skills/macos-test-rig/SKILL.md) | Pi, Prime, Codex, Claude | Drives remote macOS test hosts over SSH through the `mac` script and per-host config |
 | [obsidian-cli](skills/obsidian-cli/SKILL.md) | Pi, Prime, Codex, Claude | Reads, searches, and safely edits the primary Obsidian vault |
 | [review](skills/review/SKILL.md) | Pi | Runs an explicitly invoked, read-only subagent review of the current branch |
 | [subagent](skills/subagent/SKILL.md) | Pi | Spawns an isolated Pi process for delegated work |
 | [unslop](skills/unslop/SKILL.md) | Pi, Prime, Codex, Claude | Removes common AI-writing patterns and adds a more human voice |
 | [web](skills/web/SKILL.md) | Pi, Prime, Codex, Claude | Explicit-consent static web search and URL-to-Markdown extraction |
+| [windows-test-rig](skills/windows-test-rig/SKILL.md) | Pi, Prime, Codex, Claude | Provisions and drives local libvirt Windows 11 test VMs through the `rig` script and per-VM config |
 | [writing-for-agents](skills/writing-for-agents/SKILL.md) | Pi, Prime, Codex, Claude | Writes and reviews concise, effective documents intended for agents |
 
 Every discovered skill defaults to all four agents. The optional
@@ -45,15 +47,17 @@ Every discovered skill defaults to all four agents. The optional
   development environment.
 - [uv](https://docs.astral.sh/uv/) for the executable web helper, which is
   pinned to CPython 3.14.7 and otherwise uses only the standard library.
-- [Node.js](https://nodejs.org) 24.14.1 for the dependency-free skill installer.
-- [Bun](https://bun.sh) 1.3.13 for development dependencies, TypeScript tooling,
-  tests, and personal Pi extensions.
+- [Node.js](https://nodejs.org) 24.14.1 for the dependency-free skill installer,
+  and with its bundled npm for development dependencies, TypeScript tooling, and
+  tests.
 - Git for cloning `respec`; its locked Go and just versions are installed by
   mise during `mise run toolkit:sync`.
 - [Pi](https://pi.dev), when using the Pi-only extensions or the `review` and
   `subagent` skills.
 - `obsidian`, when using `obsidian-cli`.
 - Graphviz (`dot`) and `mmdc`, when using `diagrams`.
+- libvirt, `virt-install`, ImageMagick, and `xorriso` or `nix`, when using
+  `windows-test-rig`.
 - `gh`, when the web skill reads recognized GitHub URLs.
 - `html2markdown`, only for the web skill's ordinary static-HTML conversion
   path.
@@ -110,9 +114,15 @@ building, or installing. The resource CLI uses these eight fixed destinations:
 | Claude | `~/.claude/skills` | `~/.claude/CLAUDE.md` |
 
 Every discovered skill defaults to all four agents unless `agent-toolkit.json`
-narrows its scope. The presence of `context/working-style.md` makes global
+narrows its scope. The presence of `context/working-style.md.j2` makes global
 context expected for every selected agent. A checkout without that file does not
 own global context and will not remove a link installed by another checkout.
+
+The template is a Jinja subset: `{% if agent == "claude" %}`,
+`{% if agent in ["pi", "prime"] %}`, and `{% endif %}`, rendered with Jinja's
+`trim_blocks` and `lstrip_blocks` rules. Any other tag, `{{ }}`, or `{# #}`
+fails validation. Edits reach agents only when you run `sync`; `status` reports
+stale renders as `outdated`.
 
 Select agents with repeatable `--agent` flags or a comma-separated value:
 
@@ -150,8 +160,9 @@ only the `toolkit:sync` mise task.
 
 - `--home <path>` overrides the home directory, primarily for tests.
 
-Context ownership requires an exact link target of this checkout's
-`context/working-style.md`. Skill ownership remains limited to direct children
+Context ownership requires an exact link target of one of this checkout's
+`context/dist/<agent>.md` files or the pre-template `context/working-style.md`;
+`sync` repoints the latter. Skill ownership remains limited to direct children
 of this checkout's `skills/` directory. Files, directories, external links,
 links from a moved checkout, and separately managed resources are preserved. A
 conflict produces a nonzero exit rather than replacing content.
@@ -180,7 +191,7 @@ Use the repository's mise tasks rather than selecting runtimes directly:
 mise run fmt              # Format repository-authored root and skill Markdown
 mise run typecheck        # Type-check Python and TypeScript
 mise run toolkit:validate # Validate skills, optional context, and scope overrides
-mise run test             # Run the Python and Bun suites
+mise run test             # Run the Python and Node suites
 mise run check            # Run the complete repository gate
 mise run hooks:install    # Explicitly install pre-commit hooks
 ```
@@ -220,8 +231,7 @@ Extensions remain Pi-only package resources.
 
 | Tool | Role |
 | -- | -- |
-| Node.js 24.14.1 | Dependency-free installer runtime |
-| Bun 1.3.13 | Development package manager and TypeScript test runner |
+| Node.js 24.14.1 | Installer runtime, npm package manager, and `node --test` runner |
 | TypeScript | Pi extensions and development tests |
 | Python standard library | Portable web helper |
 | Agent Skills | Cross-harness skill format |

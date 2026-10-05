@@ -4,11 +4,10 @@ node_modules/
 .mypy_cache/
 __pycache__/
 *.py[codz]
-bun.lockb
 *.lock
-!bun.lock
 !mise.lock
 !uv.lock
 .DS_Store
 
 .samples/
+context/dist/

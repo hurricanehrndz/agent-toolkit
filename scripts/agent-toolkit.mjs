@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
-import { existsSync, lstatSync, readlinkSync, readdirSync } from "node:fs";
-import { mkdir, readFile, rm, symlink } from "node:fs/promises";
+import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,9 @@ import { fileURLToPath } from "node:url";
 /** @typedef {{ name: string, path: string }} Skill */
 /** @typedef {Map<string, Agent[]>} SkillScopes */
 /** @typedef {{ changed: number, conflicts: number }} Summary */
+/** @typedef {{ type: "text", value: string } | { type: "if", agents: Agent[] } | { type: "endif" }} TemplateToken */
+/** @typedef {{ tokens: TemplateToken[] | undefined, distRoot: string, legacySource: string }} Context */
+/** @typedef {"present" | "owned" | "missing" | "conflict"} ContextLinkState */
 
 /** @type {Record<Agent, string>} */
 const AGENT_SKILL_PATHS = {
@@ -26,7 +29,11 @@ const AGENT_CONTEXT_PATHS = {
     codex: ".codex/AGENTS.md",
     claude: ".claude/CLAUDE.md",
 };
-const CONTEXT_SOURCE_PATH = "context/working-style.md";
+const CONTEXT_SOURCE_PATH = "context/working-style.md.j2";
+// Rendered per agent on install/sync; home context links point here.
+const CONTEXT_DIST_PATH = "context/dist";
+// Pre-template checkouts linked every agent to this file; sync repoints those links.
+const LEGACY_CONTEXT_SOURCE_PATH = "context/working-style.md";
 /** @type {Agent[]} */
 const ALL_AGENTS = /** @type {Agent[]} */ (Object.keys(AGENT_SKILL_PATHS));
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -476,24 +483,129 @@ function targetOfLink(path) {
         return undefined;
     }
 }
-/** @param {string} contextSource @returns {{exists: boolean, errors: string[]}} */
+/**
+ * Parse the Jinja subset accepted by the context template: `{% if agent == "x" %}`,
+ * `{% if agent in ["x", "y"] %}`, and `{% endif %}`, using Jinja's trim_blocks and
+ * lstrip_blocks whitespace rules. Every other tag or expression is rejected so the
+ * template stays renderable by real Jinja.
+ * CEILING: conditionals on the agent name only. Switch to minijinja-cli pinned in
+ * mise (aqua:mitsuhiko/minijinja) when the template needs else, includes, loops,
+ * or variables.
+ *
+ * @param {string} source
+ * @returns {TemplateToken[]}
+ */
+export function parseContextTemplate(source) {
+    /** @type {TemplateToken[]} */
+    const tokens = [];
+    /** @param {number} index */
+    const lineOf = (index) => source.slice(0, index).split("\n").length;
+    /** @param {string} value @param {number} index */
+    const pushText = (value, index) => {
+        const expression = value.search(/\{\{|\{#/);
+        if (expression !== -1) {
+            throw new SyntaxError(`line ${lineOf(index + expression)}: only {% if agent ... %} blocks are supported`);
+        }
+        tokens.push({ type: "text", value });
+    };
+    let depth = 0;
+    let cursor = 0;
+    for (const match of source.matchAll(/(?:^[ \t]*)?\{%(.*?)%\}(?:\r?\n)?/gm)) {
+        pushText(source.slice(cursor, match.index), cursor);
+        cursor = match.index + match[0].length;
+        const tag = (match[1] ?? "").trim();
+        if (tag === "endif") {
+            if (depth === 0) {
+                throw new SyntaxError(`line ${lineOf(match.index)}: {% endif %} without {% if %}`);
+            }
+            depth -= 1;
+            tokens.push({ type: "endif" });
+            continue;
+        }
+        const single = tag.match(/^if agent == "([a-z]+)"$/);
+        const list = tag.match(/^if agent in \[\s*("[a-z]+"(?:\s*,\s*"[a-z]+")*)\s*\]$/);
+        const names = single ? [single[1] ?? ""] : list?.[1]?.split(",").map((part) => part.trim().slice(1, -1));
+        if (names === undefined) {
+            throw new SyntaxError(`line ${lineOf(match.index)}: unsupported tag {% ${tag} %}`);
+        }
+        for (const name of names) {
+            if (!ALL_AGENTS.includes(/** @type {Agent} */ (name))) {
+                throw new SyntaxError(`line ${lineOf(match.index)}: unknown agent "${name}"`);
+            }
+        }
+        depth += 1;
+        tokens.push({ type: "if", agents: /** @type {Agent[]} */ (names) });
+    }
+    pushText(source.slice(cursor), cursor);
+    if (depth > 0) {
+        throw new SyntaxError("{% if %} without {% endif %}");
+    }
+    return tokens;
+}
+/** @param {TemplateToken[]} tokens @param {Agent} agent @returns {string} */
+export function renderContextTemplate(tokens, agent) {
+    /** @type {boolean[]} */
+    const active = [];
+    let output = "";
+    for (const token of tokens) {
+        if (token.type === "if") {
+            active.push(token.agents.includes(agent));
+        }
+        else if (token.type === "endif") {
+            active.pop();
+        }
+        else if (active.every(Boolean)) {
+            output += token.value;
+        }
+    }
+    return output;
+}
+/** @param {string} contextSource @returns {{tokens: TemplateToken[] | undefined, errors: string[]}} */
 function validateContextSource(contextSource) {
     try {
         if (!lstatSync(contextSource).isFile()) {
-            return { exists: true, errors: [`${CONTEXT_SOURCE_PATH}: must be a regular file`] };
+            return { tokens: undefined, errors: [`${CONTEXT_SOURCE_PATH}: must be a regular file`] };
         }
-        return { exists: true, errors: [] };
     }
     catch (error) {
         if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") {
-            return { exists: false, errors: [] };
+            return { tokens: undefined, errors: [] };
         }
         throw error;
     }
+    try {
+        return { tokens: parseContextTemplate(readFileSync(contextSource, "utf8")), errors: [] };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { tokens: undefined, errors: [`${CONTEXT_SOURCE_PATH}: ${message}`] };
+    }
 }
-/** @param {string} destination @param {string} contextSource @returns {boolean} */
-function isOwnedContextLink(destination, contextSource) {
-    return targetOfLink(destination) === contextSource;
+/** @param {Context} context @param {Agent} agent @returns {string} */
+function contextDistPath(context, agent) {
+    return join(context.distRoot, `${agent}.md`);
+}
+/** @param {string} destination @param {Context} context @returns {boolean} */
+function isOwnedContextLink(destination, context) {
+    const target = targetOfLink(destination);
+    return target === context.legacySource
+        || ALL_AGENTS.some((agent) => target === contextDistPath(context, agent));
+}
+/** @param {string} destination @param {Context} context @param {Agent} agent @returns {ContextLinkState} */
+function contextLinkState(destination, context, agent) {
+    const target = targetOfLink(destination);
+    if (target === contextDistPath(context, agent)) {
+        return "present";
+    }
+    if (isOwnedContextLink(destination, context)) {
+        return "owned";
+    }
+    return existsSync(destination) || target !== undefined ? "conflict" : "missing";
+}
+/** @param {Context} context @param {TemplateToken[]} tokens @param {Agent} agent @returns {Promise<boolean>} */
+async function isRenderedContextCurrent(context, tokens, agent) {
+    const path = contextDistPath(context, agent);
+    return existsSync(path) && await readFile(path, "utf8") === renderContextTemplate(tokens, agent);
 }
 /** @param {string} path @param {string} parent @returns {boolean} */
 function isWithin(path, parent) {
@@ -545,24 +657,46 @@ async function removeStaleLinks(destinationRoot, skills, skillsRoot, dryRun) {
 function skillsForAgent(skills, scopes, agent) {
     return skills.filter((skill) => scopes.get(skill.name)?.includes(agent) === true);
 }
-/** @param {string} contextSource @param {string} destination @param {boolean} dryRun @returns {Promise<"linked" | "present" | "conflict">} */
-async function ensureContextLink(contextSource, destination, dryRun) {
-    const currentTarget = targetOfLink(destination);
-    if (currentTarget === contextSource) {
-        return "present";
+/** @param {Options} options @param {Context} context @param {TemplateToken[]} tokens @param {Agent} agent @param {string} destination @returns {Promise<Summary>} */
+async function ensureContext(options, context, tokens, agent, destination) {
+    const state = contextLinkState(destination, context, agent);
+    if (state === "conflict") {
+        process.stderr.write(`  conflict context: ${destination} already exists
+`);
+        return { changed: 0, conflicts: 1 };
     }
-    if (existsSync(destination) || currentTarget !== undefined) {
-        return "conflict";
+    let changed = 0;
+    const rendered = contextDistPath(context, agent);
+    if (!await isRenderedContextCurrent(context, tokens, agent)) {
+        process.stdout.write(`  render context: ${rendered}
+`);
+        if (!options.dryRun) {
+            await mkdir(context.distRoot, { recursive: true });
+            await writeFile(rendered, renderContextTemplate(tokens, agent));
+        }
+        changed += 1;
     }
-    if (!dryRun) {
-        await mkdir(dirname(destination), { recursive: true });
-        await symlink(contextSource, destination, "file");
+    if (state === "owned" && options.command !== "sync") {
+        process.stdout.write(`  outdated context link: ${destination} (run sync to repoint)
+`);
     }
-    return "linked";
+    else if (state !== "present") {
+        process.stdout.write(`  ${state === "owned" ? "relink" : "link"} context: ${destination}
+`);
+        if (!options.dryRun) {
+            if (state === "owned") {
+                await rm(destination);
+            }
+            await mkdir(dirname(destination), { recursive: true });
+            await symlink(rendered, destination, "file");
+        }
+        changed += 1;
+    }
+    return { changed, conflicts: 0 };
 }
-/** @param {string} destination @param {string} contextSource @param {boolean} dryRun @returns {Promise<number>} */
-async function removeOwnedContextLink(destination, contextSource, dryRun) {
-    if (!isOwnedContextLink(destination, contextSource)) {
+/** @param {string} destination @param {Context} context @param {boolean} dryRun @returns {Promise<number>} */
+async function removeOwnedContextLink(destination, context, dryRun) {
+    if (!isOwnedContextLink(destination, context)) {
         return 0;
     }
     process.stdout.write(`remove context: ${destination}
@@ -572,8 +706,8 @@ async function removeOwnedContextLink(destination, contextSource, dryRun) {
     }
     return 1;
 }
-/** @param {Options} options @param {Skill[]} skills @param {SkillScopes} scopes @param {string} skillsRoot @param {string} contextSource @param {boolean} hasContext @returns {Promise<Summary>} */
-async function installOrSync(options, skills, scopes, skillsRoot, contextSource, hasContext) {
+/** @param {Options} options @param {Skill[]} skills @param {SkillScopes} scopes @param {string} skillsRoot @param {Context} context @returns {Promise<Summary>} */
+async function installOrSync(options, skills, scopes, skillsRoot, context) {
     let changed = 0;
     let conflicts = 0;
     for (const agent of options.agents) {
@@ -598,27 +732,19 @@ async function installOrSync(options, skills, scopes, skillsRoot, contextSource,
             changed += await removeStaleLinks(destinationRoot, scopedSkills, skillsRoot, options.dryRun);
         }
         const contextDestination = join(options.home, AGENT_CONTEXT_PATHS[agent]);
-        if (hasContext) {
-            const result = await ensureContextLink(contextSource, contextDestination, options.dryRun);
-            if (result === "linked") {
-                process.stdout.write(`  link context: ${contextDestination}
-`);
-                changed += 1;
-            }
-            else if (result === "conflict") {
-                process.stderr.write(`  conflict context: ${contextDestination} already exists
-`);
-                conflicts += 1;
-            }
+        if (context.tokens !== undefined) {
+            const result = await ensureContext(options, context, context.tokens, agent, contextDestination);
+            changed += result.changed;
+            conflicts += result.conflicts;
         }
         else if (options.command === "sync") {
-            changed += await removeOwnedContextLink(contextDestination, contextSource, options.dryRun);
+            changed += await removeOwnedContextLink(contextDestination, context, options.dryRun);
         }
     }
     return { changed, conflicts };
 }
-/** @param {Options} options @param {Skill[]} skills @param {SkillScopes} scopes @param {string} contextSource @param {boolean} hasContext @returns {Promise<Summary>} */
-async function showStatus(options, skills, scopes, contextSource, hasContext) {
+/** @param {Options} options @param {Skill[]} skills @param {SkillScopes} scopes @param {Context} context @returns {Promise<Summary>} */
+async function showStatus(options, skills, scopes, context) {
     let conflicts = 0;
     for (const agent of options.agents) {
         const destinationRoot = join(options.home, AGENT_SKILL_PATHS[agent]);
@@ -641,19 +767,21 @@ async function showStatus(options, skills, scopes, contextSource, hasContext) {
         conflicts += agentConflicts;
         process.stdout.write(`${agent}: ${linked} linked, ${missing} missing, ${agentConflicts} conflicts (${destinationRoot})
 `);
-        if (hasContext) {
+        if (context.tokens !== undefined) {
             const contextDestination = join(options.home, AGENT_CONTEXT_PATHS[agent]);
-            const target = targetOfLink(contextDestination);
+            const linkState = contextLinkState(contextDestination, context, agent);
             let state;
-            if (target === contextSource) {
-                state = "linked";
+            if (linkState === "present") {
+                state = await isRenderedContextCurrent(context, context.tokens, agent) ? "linked" : "outdated";
             }
-            else if (!existsSync(contextDestination) && target === undefined) {
-                state = "missing";
+            else if (linkState === "owned") {
+                state = "outdated";
             }
             else {
-                state = "conflict";
-                conflicts += 1;
+                state = linkState;
+                if (state === "conflict") {
+                    conflicts += 1;
+                }
             }
             process.stdout.write(`  context: ${state} (${contextDestination})
 `);
@@ -661,8 +789,8 @@ async function showStatus(options, skills, scopes, contextSource, hasContext) {
     }
     return { changed: 0, conflicts };
 }
-/** @param {Options} options @param {string} skillsRoot @param {string} contextSource @returns {Promise<Summary>} */
-async function uninstall(options, skillsRoot, contextSource) {
+/** @param {Options} options @param {string} skillsRoot @param {Context} context @returns {Promise<Summary>} */
+async function uninstall(options, skillsRoot, context) {
     let changed = 0;
     for (const agent of options.agents) {
         const destinationRoot = join(options.home, AGENT_SKILL_PATHS[agent]);
@@ -681,7 +809,7 @@ async function uninstall(options, skillsRoot, contextSource) {
             }
         }
         const contextDestination = join(options.home, AGENT_CONTEXT_PATHS[agent]);
-        changed += await removeOwnedContextLink(contextDestination, contextSource, options.dryRun);
+        changed += await removeOwnedContextLink(contextDestination, context, options.dryRun);
     }
     return { changed, conflicts: 0 };
 }
@@ -694,9 +822,14 @@ export async function run(argv, repoRoot = resolve(dirname(fileURLToPath(import.
         const validationErrors = await validateSkills(skillsRoot);
         const config = await loadConfig(join(repoRoot, "agent-toolkit.json"), skills);
         validationErrors.push(...config.errors);
-        const contextSource = resolve(repoRoot, CONTEXT_SOURCE_PATH);
-        const context = validateContextSource(contextSource);
-        validationErrors.push(...context.errors);
+        const contextSource = validateContextSource(resolve(repoRoot, CONTEXT_SOURCE_PATH));
+        validationErrors.push(...contextSource.errors);
+        /** @type {Context} */
+        const context = {
+            tokens: contextSource.tokens,
+            distRoot: resolve(repoRoot, CONTEXT_DIST_PATH),
+            legacySource: resolve(repoRoot, LEGACY_CONTEXT_SOURCE_PATH),
+        };
         if (validationErrors.length > 0) {
             for (const error of validationErrors) {
                 process.stderr.write(`error: ${error}
@@ -711,13 +844,13 @@ export async function run(argv, repoRoot = resolve(dirname(fileURLToPath(import.
         }
         let summary;
         if (options.command === "status") {
-            summary = await showStatus(options, skills, config.scopes, contextSource, context.exists);
+            summary = await showStatus(options, skills, config.scopes, context);
         }
         else if (options.command === "uninstall") {
-            summary = await uninstall(options, skillsRoot, contextSource);
+            summary = await uninstall(options, skillsRoot, context);
         }
         else {
-            summary = await installOrSync(options, skills, config.scopes, skillsRoot, contextSource, context.exists);
+            summary = await installOrSync(options, skills, config.scopes, skillsRoot, context);
         }
         if (options.dryRun && summary.changed > 0) {
             process.stdout.write(`Dry run: ${summary.changed} change(s) would be made.

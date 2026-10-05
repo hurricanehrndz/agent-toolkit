@@ -2,7 +2,6 @@
 locked = true
 
 [tools]
-bun = "1.3.13"
 node = "24.14.1"
 python = "3.14.7"
 uv = "0.11.21"
@@ -10,8 +9,8 @@ uv = "0.11.21"
 "aqua:j178/prek" = "0.4.12"
 
 [tasks.setup]
-description = "Install dependencies from the Bun and uv lockfiles"
-run = ["bun install --registry https://registry.npmjs.org --frozen-lockfile", "uv sync --python 3.14.7 --locked"]
+description = "Install dependencies from the npm and uv lockfiles"
+run = ["npm ci", "uv sync --python 3.14.7 --locked"]
 
 [tasks.fmt]
 description = "Format configured files with treefmt"
@@ -23,7 +22,7 @@ run = "uv run mypy"
 
 [tasks."typecheck:typescript"]
 description = "Type-check TypeScript sources with tsc"
-run = "bun x tsc --noEmit"
+run = "npm exec --no -- tsc"
 
 [tasks.typecheck]
 description = "Type-check everything (Python + TypeScript)"
@@ -52,7 +51,7 @@ run = "uv run python -m unittest discover -s skills/web/scripts -p '*_test.py'"
 [tasks.test]
 description = "Run the test suite"
 depends = ["test:python"]
-run = "bun test --pass-with-no-tests"
+run = "node --test 'scripts/**/*.test.ts' 'extensions/**/*.test.ts'"
 
 [tasks.check]
 description = "Full check: prek all-files + TypeScript typecheck + tests"

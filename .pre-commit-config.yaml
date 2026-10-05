@@ -9,7 +9,7 @@ repos:
         require_serial: true
       - id: markdownlint
         name: markdownlint
-        entry: mise exec -- bun x markdownlint --config .markdownlint.jsonc
+        entry: mise exec -- npm exec --no -- markdownlint --config .markdownlint.jsonc
         language: system
         files: \.md$
         exclude: ^skills/[^/]+/SKILL\.md$
@@ -17,7 +17,7 @@ repos:
       # Skill entry points may begin directly with executable instructions.
       - id: markdownlint-skills
         name: markdownlint skills
-        entry: mise exec -- bun x markdownlint --config .markdownlint.jsonc --disable MD041 --
+        entry: mise exec -- npm exec --no -- markdownlint --config .markdownlint.jsonc --disable MD041 --
         language: system
         files: ^skills/[^/]+/SKILL\.md$
         require_serial: true

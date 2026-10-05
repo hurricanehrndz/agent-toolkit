@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 
@@ -8,7 +9,7 @@ import {
 	getSessionUsageStats,
 	renderCacheUsage,
 	renderContextUsage,
-} from "./renderers.js";
+} from "./renderers.ts";
 
 const theme = {
 	fg: (_role: string, text: string) => text,
@@ -64,7 +65,7 @@ describe("session usage", () => {
 			messageEntry("second", assistantMessage({ cost: 0.034 })),
 		];
 
-		expect(getSessionCost(entries)).toBeCloseTo(0.046);
+		assert.ok(Math.abs(getSessionCost(entries) - 0.046) < 0.005);
 	});
 
 	test("adds cache tokens and uses the latest turn for the hit rate", () => {
@@ -79,7 +80,7 @@ describe("session usage", () => {
 			),
 		];
 
-		expect(getSessionUsageStats(entries)).toEqual({
+		assert.deepEqual(getSessionUsageStats(entries), {
 			cost: 0.046,
 			cacheRead: 1200,
 			cacheWrite: 200,
@@ -97,23 +98,21 @@ describe("usage rendering", () => {
 			cacheHitRate: 60,
 		};
 
-		expect(renderCacheUsage(stats, theme)).toEqual({
+		assert.deepEqual(renderCacheUsage(stats, theme), {
 			text: "R1.2k W200 CH60.0%",
 			rawWidth: 18,
 		});
 	});
 
 	test("hides cache stats when the session has no cache activity", () => {
-		expect(
-			renderCacheUsage(
+		assert.deepEqual(renderCacheUsage(
 				{ cost: 0, cacheRead: 0, cacheWrite: 0, cacheHitRate: 0 },
 				theme,
-			),
-		).toEqual({ text: "", rawWidth: 0 });
+			), { text: "", rawWidth: 0 });
 	});
 
 	test("shows unknown context after compaction", () => {
-		expect(renderContextUsage(null, 200_000, theme)).toEqual({
+		assert.deepEqual(renderContextUsage(null, 200_000, theme), {
 			text: "?/200k",
 			rawWidth: 6,
 		});
@@ -124,12 +123,12 @@ describe("composeFooterLine", () => {
 	test("pads between groups so the cache stats end at the right edge", () => {
 		const line = composeFooterLine("left", "right", " | ", 20);
 
-		expect(line).toHaveLength(20);
-		expect(line.startsWith("left | ")).toBe(true);
-		expect(line.endsWith("right")).toBe(true);
+		assert.equal(line.length, 20);
+		assert.equal(line.startsWith("left | "), true);
+		assert.equal(line.endsWith("right"), true);
 	});
 
 	test("does not add a trailing separator when cache stats are absent", () => {
-		expect(composeFooterLine("left", "", " | ", 20)).toBe("left");
+		assert.equal(composeFooterLine("left", "", " | ", 20), "left");
 	});
 });

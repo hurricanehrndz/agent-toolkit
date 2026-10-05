@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, test } from "node:test";
 
 import { parseFlatYamlFrontmatter, run } from "./agent-toolkit.mjs";
+import { assertIncludes } from "./test-support.ts";
 
 let sandbox: string;
 let repoRoot: string;
@@ -51,44 +53,39 @@ describe("flat frontmatter parser", () => {
 	for (const [index, frontmatter] of accepted.entries()) {
 		test(`accepts supported scalar case ${index + 1}`, async () => {
 			const result = await validate(`---\n${frontmatter}---\n`);
-			expect(result).toEqual({ code: 0, stderr: "" });
+			assert.deepEqual(result, { code: 0, stderr: "" });
 		});
 	}
 
-	const yamlNumberCompatibility: Array<[string, "number" | "string"]> = [
-		[".nan", "number"],
-		[".NaN", "number"],
-		[".NAN", "number"],
-		[".inf", "number"],
-		["+.INF", "number"],
-		["-.Inf", "number"],
-		["0x10", "number"],
-		["+0x10", "number"],
-		["-0x10", "number"],
-		["0o7", "number"],
-		["+0o7", "number"],
-		["-0o7", "number"],
-		[".5", "number"],
-		["+.5", "string"],
-		["-.5", "string"],
-		["+.nan", "string"],
-		["-.nan", "string"],
-		["0X10", "string"],
-		["0b10", "string"],
+	// Pinned YAML typing: numeric forms must be rejected as descriptions, and
+	// near-misses must stay plain strings.
+	const yamlNumberCompatibility: Array<[string, number | string]> = [
+		[".nan", Number.NaN],
+		[".NaN", Number.NaN],
+		[".NAN", Number.NaN],
+		[".inf", Number.POSITIVE_INFINITY],
+		["+.INF", Number.POSITIVE_INFINITY],
+		["-.Inf", Number.NEGATIVE_INFINITY],
+		["0x10", 16],
+		["+0x10", 16],
+		["-0x10", -16],
+		["0o7", 7],
+		["+0o7", 7],
+		["-0o7", -7],
+		[".5", 0.5],
+		["+.5", "+.5"],
+		["-.5", "-.5"],
+		["+.nan", "+.nan"],
+		["-.nan", "-.nan"],
+		["0X10", "0X10"],
+		["0b10", "0b10"],
 	];
 
-	for (const [scalar, yamlType] of yamlNumberCompatibility) {
-		test(`matches Bun YAML typing for ${scalar}`, async () => {
-			const parsed = Bun.YAML.parse(`description: ${scalar}\n`) as { description: unknown };
-			const toolkitValue = parseFlatYamlFrontmatter(`description: ${scalar}\n`).description;
-			expect(typeof toolkitValue).toBe(yamlType);
-			if (typeof parsed.description === "number" && Number.isNaN(parsed.description)) {
-				expect(Number.isNaN(toolkitValue)).toBeTrue();
-			} else {
-				expect(toolkitValue).toBe(parsed.description as string | number);
-			}
+	for (const [scalar, expected] of yamlNumberCompatibility) {
+		test(`types ${scalar} as ${typeof expected}`, async () => {
+			assert.equal(parseFlatYamlFrontmatter(`description: ${scalar}\n`).description, expected);
 			const result = await validate(`---\nname: valid\ndescription: ${scalar}\n---\n`);
-			expect(result.code).toBe(yamlType === "string" ? 0 : 1);
+			assert.equal(result.code, typeof expected === "string" ? 0 : 1);
 		});
 	}
 
@@ -121,8 +118,8 @@ describe("flat frontmatter parser", () => {
 	for (const [label, frontmatter, message] of rejected) {
 		test(`rejects ${label}`, async () => {
 			const result = await validate(`---\n${frontmatter}---\n`);
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain(message);
+			assert.equal(result.code, 1);
+			assertIncludes(result.stderr, message);
 		});
 	}
 });
@@ -135,8 +132,8 @@ test("every checked-in skill satisfies the frontmatter contract", async () => {
 		return true;
 	}) as typeof process.stderr.write;
 	try {
-		expect(await run(["validate"], resolve(import.meta.dir, ".."))).toBe(0);
-		expect(stderr).toBe("");
+		assert.equal(await run(["validate"], resolve(import.meta.dirname, "..")), 0);
+		assert.equal(stderr, "");
 	} finally {
 		process.stdout.write = originalStdoutWrite;
 		process.stderr.write = originalStderrWrite;
