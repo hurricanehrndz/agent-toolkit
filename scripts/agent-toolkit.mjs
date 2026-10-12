@@ -488,7 +488,7 @@ function targetOfLink(path) {
  * `{% if agent in ["x", "y"] %}`, and `{% endif %}`, using Jinja's trim_blocks and
  * lstrip_blocks whitespace rules. Every other tag or expression is rejected so the
  * template stays renderable by real Jinja.
- * CEILING: conditionals on the agent name only. Switch to minijinja-cli pinned in
+ * Supports conditionals on the agent name only. Switch to minijinja-cli pinned in
  * mise (aqua:mitsuhiko/minijinja) when the template needs else, includes, loops,
  * or variables.
  *

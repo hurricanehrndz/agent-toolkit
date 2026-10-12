@@ -531,7 +531,7 @@ def run_command(
     stdout_limit: int = COMMAND_STDOUT_LIMIT,
     stderr_limit: int = COMMAND_STDERR_LIMIT,
 ) -> str:
-    # CEILING: bounded process-tree cleanup currently relies on POSIX process
+    # Bounded process-tree cleanup currently relies on POSIX process
     # groups. Add a Windows Job Object implementation before enabling external
     # commands there.
     if os.name != "posix":

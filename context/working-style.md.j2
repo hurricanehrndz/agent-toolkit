@@ -33,11 +33,10 @@ non-trivial work and use judgment on trivial tasks.
 - Leave the smallest runnable check that would fail if the logic you just wrote
   regressed. Tests should encode why the behaviour matters, not restate the
   implementation.
-- Mark a deliberate shortcut with a `CEILING:` comment naming its limit and the
-  upgrade path, so it reads as a decision rather than an oversight. The prefix
-  is what makes them greppable later — a shortcut is a bet that its limit won't
-  be reached, and that bet needs re-checking when the assumptions move. Keep it
-  distinct from `TODO`, which means unfinished rather than finished-and-bounded.
+- Comment a deliberate shortcut with its limit and the upgrade path, so it
+  reads as a decision rather than an oversight. Use plain words, not an invented
+  marker a reviewer would have to look up. Keep it distinct from `TODO`, which
+  means unfinished rather than finished-and-bounded.
 
 ## Working with the user
 

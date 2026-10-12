@@ -73,7 +73,7 @@ die() {
 # SSH then hops through that host (RIG_JUMP, defaulting to the URI's host).
 [[ $RIG_URI =~ ^qemu\+ssh://([^/?]+)/ ]] && RIG_JUMP=${RIG_JUMP:-${BASH_REMATCH[1]}}
 RIG_JUMP=${RIG_JUMP:-}
-# CEILING: nothing stops two hosts driving one VM at once (say, a reset during
+# Nothing stops two hosts driving one VM at once (say, a reset during
 # another host's test). Fine for a single user; a lock file in the guest's
 # C:\rig would be the upgrade.
 v() { env -u SSH_AUTH_SOCK virsh -q -c "$RIG_URI" "$@"; }
