@@ -33,7 +33,7 @@ The package and installer deliberately do not both own Pi skill installation.
 | [review](skills/review/SKILL.md) | Pi | Runs an explicitly invoked, read-only subagent review of the current branch |
 | [subagent](skills/subagent/SKILL.md) | Pi | Spawns an isolated Pi process for delegated work |
 | [unslop](skills/unslop/SKILL.md) | Pi, Prime, Codex, Claude | Removes common AI-writing patterns and adds a more human voice |
-| [web](skills/web/SKILL.md) | Pi, Prime, Codex, Claude | Explicit-consent static web search and URL-to-Markdown extraction |
+| [web](skills/web/SKILL.md) | Pi, Prime, Codex, Claude | Explicit-consent static URL-to-Markdown extraction |
 | [windows-test-rig](skills/windows-test-rig/SKILL.md) | Pi, Prime, Codex, Claude | Provisions and drives local libvirt Windows 11 test VMs through the `rig` script and per-VM config |
 | [writing-for-agents](skills/writing-for-agents/SKILL.md) | Pi, Prime, Codex, Claude | Writes and reviews concise, effective documents intended for agents |
 
@@ -62,8 +62,8 @@ Every discovered skill defaults to all four agents. The optional
 - `html2markdown`, only for the web skill's ordinary static-HTML conversion
   path.
 - A POSIX host (macOS or Linux) for direct `./scripts/web` execution and the
-  bounded `gh` and `html2markdown` subprocess paths. On Windows, HTTP-only
-  search and Markdown-for-Agents extraction can be invoked explicitly with
+  bounded `gh` and `html2markdown` subprocess paths. On Windows,
+  Markdown-for-Agents extraction can be invoked explicitly with
   `uv run --script scripts\web`.
 
 ## Install the Pi extensions
@@ -174,15 +174,12 @@ From `skills/web/`, after the user has explicitly requested web access or URL
 reading:
 
 ```bash
-./scripts/web search --query "current project documentation"
 ./scripts/web fetch https://example.com/docs
 ./scripts/web fetch https://example.com/docs --include-selector main --exclude-selector nav
 ```
 
-Search defaults to `http://localhost:7888` on the host `chernand-main` and
-`https://search.hrndz.ca` elsewhere. Set `WEB_SEARCH_BASE_URL` or pass
-`--base-url` to change it. See [the skill instructions](skills/web/SKILL.md) for
-consent, GitHub handling, prerequisites, and static-extraction limitations.
+See [the skill instructions](skills/web/SKILL.md) for consent, GitHub handling,
+prerequisites, and static-extraction limitations.
 
 ## Development
 

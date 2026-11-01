@@ -2,7 +2,7 @@
 # /// script
 # requires-python = "==3.14.7"
 # ///
-"""Consent-gated static web search and Markdown extraction CLI."""
+"""Consent-gated static web Markdown extraction CLI."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import os
 import pathlib
 import selectors
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -27,9 +26,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, BinaryIO, Mapping, Sequence, cast
 
-DEFAULT_SEARCH_BASE_URL = "https://search.hrndz.ca"
-LOCAL_SEARCH_HOSTNAME = "chernand-main"
-LOCAL_SEARCH_BASE_URL = "http://localhost:7888"
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_MAX_LINES = 1000
 DEFAULT_MAX_BYTES = 100_000
@@ -218,97 +214,6 @@ def http_request(
             raise WebError(f"Response read failed: {clean_snippet(error)}") from error
         finally:
             response.close()
-
-
-def default_search_base_url() -> str:
-    configured = os.environ.get("WEB_SEARCH_BASE_URL")
-    if configured is not None:
-        return configured
-    if socket.gethostname() == LOCAL_SEARCH_HOSTNAME:
-        return LOCAL_SEARCH_BASE_URL
-    return DEFAULT_SEARCH_BASE_URL
-
-
-def build_search_url(base_url: str, args: argparse.Namespace) -> str:
-    base = validate_http_url(base_url)
-    if not base.endswith("/"):
-        base += "/"
-    endpoint = urllib.parse.urljoin(base, "search")
-    params: list[tuple[str, str]] = [("q", args.query.strip()), ("format", "json"), ("pageno", str(args.page))]
-    if args.categories:
-        params.append(("categories", ",".join(args.categories)))
-    if args.engines:
-        params.append(("engines", ",".join(args.engines)))
-    if args.language:
-        params.append(("language", args.language.strip()))
-    if args.time_range:
-        params.append(("time_range", args.time_range))
-    return endpoint + "?" + urllib.parse.urlencode(params)
-
-
-def normalize_search_results(payload: object, limit: int) -> list[dict[str, object]]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        raise WebError("Invalid SearXNG response: expected an object with a results array")
-    results: list[dict[str, object]] = []
-    for raw in payload["results"]:
-        if not isinstance(raw, dict):
-            continue
-        title = raw.get("title")
-        url = raw.get("url")
-        if not isinstance(title, str) or not title.strip() or not isinstance(url, str) or not url.strip():
-            continue
-        engines_raw = raw.get("engines", [])
-        if isinstance(engines_raw, str):
-            engines = [item.strip() for item in engines_raw.split(",") if item.strip()]
-        elif isinstance(engines_raw, list):
-            engines = [item.strip() for item in engines_raw if isinstance(item, str) and item.strip()]
-        else:
-            engines = []
-        result: dict[str, object] = {"title": title.strip(), "url": url.strip(), "engines": engines}
-        for source, target in (("content", "content"), ("category", "category"), ("publishedDate", "published"), ("published_date", "published")):
-            value = raw.get(source)
-            if target not in result and isinstance(value, str) and value.strip():
-                result[target] = value.strip()
-        score = raw.get("score")
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
-            result["score"] = score
-        results.append(result)
-        if len(results) >= limit:
-            break
-    return results
-
-
-def search(args: argparse.Namespace) -> str:
-    query = args.query.strip()
-    if not query:
-        raise WebError("Search query must not be empty")
-    response = http_request(build_search_url(args.base_url, args), "application/json", args.timeout)
-    if not 200 <= response.status < 300:
-        raise WebError(f"SearXNG search failed with HTTP {response.status}: {clean_snippet(response.body, 500)}")
-    try:
-        payload = json.loads(response.body)
-    except json.JSONDecodeError as error:
-        raise WebError(f"SearXNG search returned invalid JSON: {clean_snippet(error)}") from error
-    results = normalize_search_results(payload, args.limit)
-    lines = [f"Search results for: {query}", ""]
-    if not results:
-        return "\n".join(lines + ["No results found."])
-    for index, result in enumerate(results, 1):
-        title = str(result["title"]).replace("]", "\\]")
-        lines.append(f"{index}. [{title}]({result['url']})")
-        metadata: list[str] = []
-        engines = result["engines"]
-        if isinstance(engines, list) and engines:
-            metadata.append("Source: " + ", ".join(str(item) for item in engines))
-        for key, label in (("category", "Category"), ("score", "Score"), ("published", "Published")):
-            if key in result:
-                metadata.append(f"{label}: {result[key]}")
-        if metadata:
-            lines.append("   " + " | ".join(metadata))
-        if "content" in result:
-            lines.append("   " + str(result["content"]))
-        lines.append("")
-    return "\n".join(lines).rstrip()
 
 
 def parse_github_url(value: str) -> GitHubTarget | None:
@@ -810,41 +715,23 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def search_limit(value: str) -> int:
-    parsed = positive_int(value)
-    if parsed > 20:
-        raise argparse.ArgumentTypeError("must be at most 20")
-    return parsed
-
-
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="web", description="Static web search and Markdown extraction")
+    root = argparse.ArgumentParser(prog="web", description="Static web Markdown extraction")
     subcommands = root.add_subparsers(dest="command", required=True)
-    search_parser = subcommands.add_parser("search", help="search through SearXNG")
-    search_parser.add_argument("--query", required=True)
-    search_parser.add_argument("--limit", type=search_limit, default=8)
-    search_parser.add_argument("--page", type=positive_int, default=1)
-    search_parser.add_argument("--categories", action="append", default=[])
-    search_parser.add_argument("--engines", action="append", default=[])
-    search_parser.add_argument("--language")
-    search_parser.add_argument("--time-range", choices=("day", "week", "month", "year"))
-    search_parser.add_argument("--base-url", default=default_search_base_url())
-    search_parser.add_argument("--timeout", type=positive_float, default=DEFAULT_TIMEOUT)
     fetch_parser = subcommands.add_parser("fetch", help="fetch one HTTP(S) URL as Markdown")
     fetch_parser.add_argument("url")
     fetch_parser.add_argument("--include-selector")
     fetch_parser.add_argument("--exclude-selector")
     fetch_parser.add_argument("--timeout", type=positive_float, default=DEFAULT_TIMEOUT)
-    for child in (search_parser, fetch_parser):
-        child.add_argument("--max-lines", type=positive_int, default=DEFAULT_MAX_LINES, help=argparse.SUPPRESS)
-        child.add_argument("--max-bytes", type=positive_int, default=DEFAULT_MAX_BYTES, help=argparse.SUPPRESS)
+    fetch_parser.add_argument("--max-lines", type=positive_int, default=DEFAULT_MAX_LINES, help=argparse.SUPPRESS)
+    fetch_parser.add_argument("--max-bytes", type=positive_int, default=DEFAULT_MAX_BYTES, help=argparse.SUPPRESS)
     return root
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        content = search(args) if args.command == "search" else fetch(args)
+        content = fetch(args)
         displayed, _path = bounded_output(content, args.max_lines, args.max_bytes)
         print(displayed)
         return 0

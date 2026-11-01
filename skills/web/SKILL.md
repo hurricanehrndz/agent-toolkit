@@ -1,14 +1,14 @@
 ---
 name: web
-description: Search the public web or read an HTTP(S) URL as static Markdown when the user explicitly requests web search, current external information, or URL inspection.
+description: Read an HTTP(S) URL as static Markdown when the user explicitly asks to read, inspect, summarize, or extract a URL.
 ---
 
 # Web
 
-Use this skill only when the user explicitly asks for web/current information or
-asks to read, inspect, summarize, or extract a URL. Do not invoke it
-speculatively when local files or supplied context are enough. The CLI does not
-enforce consent; you must.
+Use this skill only when the user explicitly asks to read, inspect, summarize,
+or extract a URL. It does not search the web. Do not invoke it speculatively
+when local files or supplied context are enough. The CLI does not enforce
+consent; you must.
 
 Run commands from this skill directory so `./scripts/web` resolves consistently
 in Pi, Prime, Codex, and Claude.
@@ -23,25 +23,11 @@ in Pi, Prime, Codex, and Claude.
 - `html2markdown` only when an ordinary page does not support Cloudflare
   Markdown-for-Agents and static HTML must be converted.
 - A POSIX host (macOS or Linux) for direct `./scripts/web` execution and the
-  `gh` and `html2markdown` paths. On Windows, invoke HTTP-only search or direct
-  Markdown-for-Agents extraction with `uv run --script scripts\web`; external
-  command extraction remains unsupported there.
+  `gh` and `html2markdown` paths. On Windows, invoke direct Markdown-for-Agents
+  extraction with `uv run --script scripts\web`; external command extraction
+  remains unsupported there.
 
 No client-side code or dynamic rendering is used.
-
-## Search
-
-Search the configured SearXNG instance. The default is `http://localhost:7888`
-when the hostname is exactly `chernand-main`, and `https://search.hrndz.ca` on
-other hosts:
-
-```bash
-./scripts/web search --query "current Python release notes"
-```
-
-Set `WEB_SEARCH_BASE_URL` or pass `--base-url` to use another SearXNG endpoint.
-Useful options include `--limit`, `--page`, repeatable `--categories` and
-`--engines`, `--language`, and `--time-range day|week|month|year`.
 
 ## Fetch
 

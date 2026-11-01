@@ -5,7 +5,6 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
-import json
 import os
 from email.message import Message
 import pathlib
@@ -77,14 +76,15 @@ class FakeResponse:
 
 class ArgumentTests(unittest.TestCase):
     def test_root_and_subcommand_help(self):
-        for argv in (["--help"], ["search", "--help"], ["fetch", "--help"]):
+        for argv in (["--help"], ["fetch", "--help"]):
             output = io.StringIO()
             with self.assertRaisesRegex(SystemExit, "0"), contextlib.redirect_stdout(output):
                 web.main(argv)
             self.assertIn("usage:", output.getvalue().lower())
 
     def test_required_arguments_and_invalid_bounds_are_rejected(self):
-        for argv in ([], ["search"], ["fetch"], ["search", "--query", "x", "--page", "0"]):
+        # search was removed; it must stay an unknown subcommand.
+        for argv in ([], ["fetch"], ["search", "--query", "x"], ["fetch", "https://x", "--max-lines", "0"]):
             with self.subTest(argv=argv), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 web.main(argv)
 
@@ -136,8 +136,8 @@ class ArgumentTests(unittest.TestCase):
     def test_timeout_must_be_finite_and_within_documented_maximum(self):
         for value in ("nan", "inf", "-inf", str(web.MAX_TIMEOUT + 1)):
             with self.subTest(value=value), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-                web.parser().parse_args(["search", "--query", "x", "--timeout", value])
-        self.assertEqual(web.parser().parse_args(["search", "--query", "x", "--timeout", "0.25"]).timeout, 0.25)
+                web.parser().parse_args(["fetch", "https://x", "--timeout", value])
+        self.assertEqual(web.parser().parse_args(["fetch", "https://x", "--timeout", "0.25"]).timeout, 0.25)
 
 
 class HttpTests(unittest.TestCase):
@@ -248,60 +248,6 @@ class HttpTests(unittest.TestCase):
         fake = FakeResponse(b"ok", charset="not-a-real-charset")
         with self.assertRaisesRegex(web.WebError, "Unsupported response charset"):
             self.request(fake)
-
-
-class SearchTests(unittest.TestCase):
-    def args(self, *extra: str):
-        return web.parser().parse_args(["search", "--query", "  useful query  ", *extra])
-
-    def test_search_default_depends_on_hostname_and_allows_overrides(self):
-        with mock.patch.dict(web.os.environ):
-            web.os.environ.pop("WEB_SEARCH_BASE_URL", None)
-            with mock.patch.object(web.socket, "gethostname", return_value="chernand-main"):
-                self.assertEqual(self.args().base_url, "http://localhost:7888")
-            with mock.patch.object(web.socket, "gethostname", return_value="another-host"):
-                self.assertEqual(self.args().base_url, "https://search.hrndz.ca")
-            with mock.patch.object(web.socket, "gethostname", return_value="chernand-main"):
-                self.assertEqual(self.args("--base-url", "https://search.example").base_url, "https://search.example")
-
-        with mock.patch.dict(web.os.environ, {"WEB_SEARCH_BASE_URL": "https://env-search.example"}):
-            with mock.patch.object(web.socket, "gethostname", return_value="chernand-main"):
-                self.assertEqual(self.args().base_url, "https://env-search.example")
-
-    def test_search_url_normalizes_base_and_pagination_options(self):
-        args = self.args("--page", "3", "--categories", "news", "--categories", "science", "--engines", "bing", "--language", "en", "--time-range", "week")
-        url = web.build_search_url("https://search.example/prefix", args)
-        parsed = __import__("urllib.parse").parse.urlsplit(url)
-        self.assertEqual(parsed.path, "/prefix/search")
-        query = __import__("urllib.parse").parse.parse_qs(parsed.query)
-        self.assertEqual(query["q"], ["useful query"])
-        self.assertEqual(query["pageno"], ["3"])
-        self.assertEqual(query["categories"], ["news,science"])
-        self.assertEqual(query["engines"], ["bing"])
-        self.assertEqual(query["time_range"], ["week"])
-
-    def test_normalizes_results_skips_bad_entries_and_limits(self):
-        payload = {"results": [None, {"title": " ", "url": "x"}, {"title": " One ", "url": " https://one ", "engines": "a, b", "published_date": "today", "score": 2}, {"title": "Two", "url": "https://two"}]}
-        self.assertEqual(web.normalize_search_results(payload, 1), [{"title": "One", "url": "https://one", "engines": ["a", "b"], "published": "today", "score": 2}])
-        with self.assertRaisesRegex(web.WebError, "results array"):
-            web.normalize_search_results({}, 8)
-
-    def test_search_formats_payload_and_honors_limit(self):
-        payload = {"results": [{"title": "A ] title", "url": "https://a", "content": "summary", "engines": ["google"]}, {"title": "B", "url": "https://b"}]}
-        with mock.patch.object(web, "http_request", return_value=response(json.dumps(payload), content_type="application/json")) as request:
-            output = web.search(self.args("--limit", "1"))
-        self.assertIn("Search results for: useful query", output)
-        self.assertIn(r"[A \] title](https://a)", output)
-        self.assertNotIn("https://b", output)
-        self.assertEqual(request.call_args.args[1], "application/json")
-
-    def test_search_reports_http_and_json_errors(self):
-        with mock.patch.object(web, "http_request", return_value=response("private\x00error", status=503)):
-            with self.assertRaisesRegex(web.WebError, "HTTP 503"):
-                web.search(self.args())
-        with mock.patch.object(web, "http_request", return_value=response("not-json", content_type="application/json")):
-            with self.assertRaisesRegex(web.WebError, "invalid JSON"):
-                web.search(self.args())
 
 
 class FetchTests(unittest.TestCase):

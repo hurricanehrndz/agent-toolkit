@@ -133,8 +133,7 @@ select an ambient `python3`.
   implementation can provide equivalent bounded process-tree cleanup.
 - Bound displayed output and error details; save complete output to a temporary
   file when truncated.
-- Keep search/fetch offline-unit-testable by mocking network and subprocess
-  boundaries.
+- Keep fetch offline-unit-testable by mocking network and subprocess boundaries.
 - Maintain two distinct ordinary-page requests: Markdown-for-Agents first, then
   static HTML for `html2markdown`.
 - Recognized GitHub URLs use `gh api` and do not silently fall back to HTML.
