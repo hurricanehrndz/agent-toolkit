@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // @ts-check
-import { lstatSync, realpathSync, statSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { mkdir, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { parseOptions, run } from "./agent-toolkit.mjs";
 
@@ -18,6 +19,44 @@ const RESPEC_REMOTES = new Set([
     "ssh://git@github.com/hurricanehrndz/respec",
     "ssh://git@github.com/hurricanehrndz/respec.git",
 ]);
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Skill helpers also run directly from a shell: ~/.local/bin name -> checkout path.
+/** @type {[string, string][]} */
+const BIN_LINKS = [["rig", "skills/windows-test-rig/scripts/rig"]];
+
+/** @param {string} home @param {boolean} dryRun */
+export async function syncBinLinks(home = homedir(), dryRun = false) {
+    for (const [name, source] of BIN_LINKS) {
+        const link = join(home, ".local/bin", name);
+        const target = join(REPO_ROOT, source);
+        if (!existsSync(target)) {
+            throw new Error(`bin link source is missing: ${target}`);
+        }
+        let current;
+        try {
+            current = readlinkSync(link);
+        }
+        catch (error) {
+            const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+            if (code === "EINVAL") {
+                throw new Error(`bin path is not a symlink: ${link}`);
+            }
+            if (code !== "ENOENT") {
+                throw error;
+            }
+            process.stdout.write(`link ${link} -> ${target}\n`);
+            if (!dryRun) {
+                await mkdir(dirname(link), { recursive: true });
+                await symlink(target, link);
+            }
+            continue;
+        }
+        if (current !== target) {
+            throw new Error(`bin link points elsewhere: ${link} -> ${current}`);
+        }
+    }
+}
 
 /**
  * @param {string} command
@@ -137,6 +176,7 @@ export async function main(argv) {
     }
     const options = parseOptions(["sync", ...argv]);
     try {
+        await syncBinLinks(options.home, options.dryRun);
         await syncRespec(options.home, options.dryRun);
         return 0;
     }

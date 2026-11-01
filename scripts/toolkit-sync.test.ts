@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,6 +12,7 @@ let sandbox: string;
 let fakeBin: string;
 let commandLog: string;
 const script = resolve(import.meta.dirname, "toolkit-sync.mjs");
+const rig = resolve(import.meta.dirname, "../skills/windows-test-rig/scripts/rig");
 
 async function writeExecutable(name: string, body: string): Promise<void> {
 	const path = join(fakeBin, name);
@@ -211,5 +212,53 @@ describe("toolkit respec sync", () => {
 		assertIncludes(result.stderr, `respec checkout path is not a directory: ${checkout}`);
 		assert.equal(await readFile(checkout, "utf8"), "keep");
 		assert.equal(existsSync(commandLog), false);
+	});
+});
+
+describe("toolkit bin links", () => {
+	test("links rig into ~/.local/bin", async () => {
+		const home = join(sandbox, "home");
+		const result = sync(home);
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(await readlink(join(home, ".local/bin/rig")), rig);
+	});
+
+	test("keeps an existing link to this checkout", async () => {
+		const home = join(sandbox, "home");
+		await mkdir(join(home, ".local/bin"), { recursive: true });
+		await symlink(rig, join(home, ".local/bin/rig"));
+
+		const result = sync(home);
+
+		assert.equal(result.status, 0, result.stderr);
+		assertExcludes(result.stdout, `link ${join(home, ".local/bin/rig")}`);
+	});
+
+	test("does not replace an unmanaged file or a foreign link", async () => {
+		const home = join(sandbox, "home");
+		await mkdir(join(home, ".local/bin"), { recursive: true });
+		await writeFile(join(home, ".local/bin/rig"), "keep");
+
+		let result = sync(home);
+		assert.equal(result.status, 2);
+		assertIncludes(result.stderr, `bin path is not a symlink: ${join(home, ".local/bin/rig")}`);
+		assert.equal(await readFile(join(home, ".local/bin/rig"), "utf8"), "keep");
+
+		await rm(join(home, ".local/bin/rig"));
+		await symlink("/elsewhere/rig", join(home, ".local/bin/rig"));
+		result = sync(home);
+		assert.equal(result.status, 2);
+		assertIncludes(result.stderr, `bin link points elsewhere: ${join(home, ".local/bin/rig")} -> /elsewhere/rig`);
+		assert.equal(await readlink(join(home, ".local/bin/rig")), "/elsewhere/rig");
+	});
+
+	test("dry-run previews the link without creating it", () => {
+		const home = join(sandbox, "dry-run-home");
+		const result = sync(home, ["--dry-run"]);
+
+		assert.equal(result.status, 0, result.stderr);
+		assertIncludes(result.stdout, `link ${join(home, ".local/bin/rig")} -> ${rig}\n`);
+		assert.equal(existsSync(home), false);
 	});
 });
