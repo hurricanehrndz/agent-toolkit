@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, readlinkSync, realpathSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -211,5 +211,66 @@ describe("toolkit respec sync", () => {
 		assertIncludes(result.stderr, `respec checkout path is not a directory: ${checkout}`);
 		assert.equal(await readFile(checkout, "utf8"), "keep");
 		assert.equal(existsSync(commandLog), false);
+	});
+});
+
+describe("toolkit bin links", () => {
+	const skills = resolve(import.meta.dirname, "../skills");
+	const rig = join(skills, "windows-test-rig/scripts/rig");
+	const mac = join(skills, "macos-test-rig/scripts/mac");
+
+	test("links each requested test-rig command into ~/.local/bin", () => {
+		const home = join(sandbox, "bins-home");
+		const result = sync(home, ["--bin", "rig,mac"]);
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(readlinkSync(join(home, ".local/bin/rig")), rig);
+		assert.equal(readlinkSync(join(home, ".local/bin/mac")), mac);
+	});
+
+	// Turning an option off must take the command away, including a link made
+	// by hand through another path, but nothing that points elsewhere.
+	test("removes links to commands that are no longer requested and keeps foreign ones", async () => {
+		const home = join(sandbox, "unrequested-home");
+		const bin = join(home, ".local/bin");
+		await mkdir(bin, { recursive: true });
+		await symlink(skills, join(sandbox, "skills-alias"));
+		await symlink(join(sandbox, "skills-alias/windows-test-rig/scripts/rig"), join(bin, "rig"));
+		await symlink("/usr/bin/true", join(bin, "mac"));
+
+		const result = sync(home);
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(existsSync(join(bin, "rig")), false);
+		assert.equal(readlinkSync(join(bin, "mac")), "/usr/bin/true");
+	});
+
+	test("refuses to replace a regular file", async () => {
+		const home = join(sandbox, "file-home");
+		const bin = join(home, ".local/bin");
+		await mkdir(bin, { recursive: true });
+		await writeFile(join(bin, "rig"), "keep");
+
+		const result = sync(home, ["--bin", "rig"]);
+
+		assert.equal(result.status, 2);
+		assertIncludes(result.stderr, `${join(bin, "rig")} is not a symlink; left unchanged`);
+		assert.equal(await readFile(join(bin, "rig"), "utf8"), "keep");
+	});
+
+	test("rejects an unknown command", () => {
+		const result = sync(join(sandbox, "unknown-home"), ["--bin", "nope"]);
+
+		assert.equal(result.status, 2);
+		assertIncludes(result.stderr, 'Unknown bin "nope"');
+	});
+
+	test("dry-run previews links without creating them", () => {
+		const home = join(sandbox, "bins-dry-run-home");
+		const result = sync(home, ["--bin", "mac", "--dry-run"]);
+
+		assert.equal(result.status, 0, result.stderr);
+		assertIncludes(result.stdout, `link mac: ${join(home, ".local/bin/mac")} -> ${mac}\n`);
+		assert.equal(existsSync(join(home, ".local/bin/mac")), false);
 	});
 });

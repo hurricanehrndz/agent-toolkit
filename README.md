@@ -104,8 +104,13 @@ removes stale links owned by this checkout. It also manages the Respec checkout
 at `~/src/me/respec`: cloning it when absent, fast-forwarding it when clean, and
 leaving it at its current revision when dirty. It then runs `mise install` and
 `mise exec -- just install` from that checkout. Pass `--dry-run` to preview both
-parts without cloning, pulling, installing tools, building, or installing. The
-resource CLI uses these eight fixed destinations:
+parts without cloning, pulling, installing tools, building, or installing.
+`--bin rig` and `--bin mac` (repeatable or comma-separated) link the
+windows-test-rig and macos-test-rig commands into `~/.local/bin`. A sync without
+a command's flag removes its link when that link resolves to this checkout's
+script. A path that is not a symlink is left alone, and requesting it fails.
+
+The resource CLI uses these eight fixed destinations:
 
 | Agent | Skills | Global context |
 | -- | -- | -- |

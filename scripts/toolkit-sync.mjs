@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // @ts-check
-import { lstatSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { parseOptions, run } from "./agent-toolkit.mjs";
@@ -18,6 +18,12 @@ const RESPEC_REMOTES = new Set([
     "ssh://git@github.com/hurricanehrndz/respec",
     "ssh://git@github.com/hurricanehrndz/respec.git",
 ]);
+
+// Test-rig commands that --bin can link into ~/.local/bin.
+const BINS = {
+    rig: resolve(import.meta.dirname, "../skills/windows-test-rig/scripts/rig"),
+    mac: resolve(import.meta.dirname, "../skills/macos-test-rig/scripts/mac"),
+};
 
 /**
  * @param {string} command
@@ -129,14 +135,110 @@ export async function syncRespec(home = homedir(), dryRun = false) {
     }
 }
 
+/** @param {string} path */
+function realpathOrNull(path) {
+    try {
+        return realpathSync(path);
+    }
+    catch {
+        return null;
+    }
+}
+
+/**
+ * Links each enabled bin into ~/.local/bin and removes links to bins that are
+ * not enabled. Paths that are not symlinks are never touched.
+ * @param {string} home @param {Set<string>} enabled @param {boolean} dryRun
+ */
+export function syncBins(home, enabled, dryRun = false) {
+    const binDir = join(home, ".local/bin");
+    for (const [name, target] of Object.entries(BINS)) {
+        const link = join(binDir, name);
+        let current = null;
+        try {
+            current = readlinkSync(link);
+        }
+        catch (error) {
+            const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+            if (code === "EINVAL") {
+                if (enabled.has(name)) {
+                    throw new Error(`${link} is not a symlink; left unchanged`);
+                }
+                continue;
+            }
+            if (code !== "ENOENT") {
+                throw error;
+            }
+        }
+        if (enabled.has(name)) {
+            if (current === target) {
+                continue;
+            }
+            process.stdout.write(`link ${name}: ${link} -> ${target}\n`);
+            if (!dryRun) {
+                mkdirSync(binDir, { recursive: true });
+                if (current !== null) {
+                    unlinkSync(link);
+                }
+                symlinkSync(target, link);
+            }
+        }
+        else if (current !== null && realpathOrNull(link) === realpathOrNull(target)) {
+            process.stdout.write(`unlink ${name}: ${link}\n`);
+            if (!dryRun) {
+                unlinkSync(link);
+            }
+        }
+    }
+}
+
+/**
+ * Splits the sync-only --bin NAME[,NAME] options from the shared ones.
+ * @param {string[]} argv
+ */
+function parseBins(argv) {
+    /** @type {string[]} */
+    const rest = [];
+    /** @type {Set<string>} */
+    const bins = new Set();
+    for (let index = 0; index < argv.length; index += 1) {
+        const argument = /** @type {string} */ (argv[index]);
+        if (argument !== "--bin") {
+            rest.push(argument);
+            continue;
+        }
+        const value = argv[index + 1];
+        if (!value) {
+            throw new Error("--bin requires a value.");
+        }
+        index += 1;
+        for (const name of value.split(",").map((part) => part.trim())) {
+            if (!Object.hasOwn(BINS, name)) {
+                throw new Error(`Unknown bin "${name}"; expected one of: ${Object.keys(BINS).join(", ")}.`);
+            }
+            bins.add(name);
+        }
+    }
+    return { bins, rest };
+}
+
 /** @param {string[]} argv */
 export async function main(argv) {
+    let bins;
+    try {
+        ({ bins, rest: argv } = parseBins(argv));
+    }
+    catch (error) {
+        process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 2;
+    }
     const result = await run(["sync", ...argv]);
     if (result !== 0) {
         return result;
     }
     const options = parseOptions(["sync", ...argv]);
     try {
+        syncBins(options.home, bins, options.dryRun);
         await syncRespec(options.home, options.dryRun);
         return 0;
     }
