@@ -27,6 +27,8 @@ the VNC session is being given a virtual display of its own. Attach it to the
 console instead, then restart the service with the two `launchctl` commands
 above:
 `sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true`.
+With that setting `/dev/console` can read as owned by root, so ignore the
+doctor's console-user warning when its capture shows the desktop.
 The fallback is `screencapture` with the Screen Recording grant for
 `sshd-session` (listed as `sshd-keygen-wrapper` on some versions) under
 Privacy & Security, Screen & System Audio Recording, in the upper list, not
