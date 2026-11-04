@@ -37,6 +37,7 @@ shut off, run `scripts/rig -v NAME up`.
 | Clean state before a test | `rig reset` (reverts to the `clean` snapshot, about 30 s) |
 | Run PowerShell, capture output | write a `.ps1`, then `rig ps FILE.ps1` |
 | One-line query | `rig ssh 'Get-Service sshd'` (single-quote it locally) |
+| Act as a non-admin user | `rig ssh --as std 'whoami'`, `rig ps --as std FILE.ps1`: a session with the standard user's own token, on a VM whose config has `RIG_STD_USER`; see [references/native-testing.md](references/native-testing.md#running-as-a-standard-user) |
 | Copy files | `rig put LOCAL [C:/dest/]`, `rig get REMOTE LOCAL` |
 | Launch a GUI app visibly | write a `.ps1` that starts it, then `rig run-it FILE.ps1` |
 | Wait for a desktop script to finish | `rig run-it --wait FILE.ps1` |

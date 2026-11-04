@@ -16,10 +16,12 @@ usage: rig [-v VM] <command> [args]
   snapshot [NAME]          save the shut-off VM as NAME (default clean), replacing it
   copy DEST_URI [NAME]     copy the shut-off VM to another libvirt host; config NAME defaults to HOST-VM
   ip                       print the guest IPv4 address
-  ssh [COMMAND]            PowerShell over SSH (interactive when no command)
+  ssh [--as std] [COMMAND] PowerShell over SSH (interactive when no command)
   put LOCAL [REMOTE]       copy to the guest (default C:/rig/)
   get REMOTE LOCAL         copy from the guest
-  ps FILE.ps1 [ARGS]       copy FILE to C:\rig and run it over SSH (no desktop)
+  ps [--as std] FILE.ps1 [ARGS]
+                           copy FILE to C:\rig and run it over SSH (no desktop)
+                           --as std signs in as RIG_STD_USER with its password
   run-it [--wait] [--elevated] FILE.ps1
                            run FILE on the interactive desktop as the logged-on user
   focus PROCESS            bring PROCESS's main window to the foreground
@@ -89,6 +91,25 @@ SSH_OPTS=(-o IdentitiesOnly=yes -i "$RIG_KEY" -o PreferredAuthentications=public
 sshx() { env -u SSH_AUTH_SOCK ssh "${SSH_OPTS[@]}" "$@"; }
 scpx() { env -u SSH_AUTH_SOCK scp -q "${SSH_OPTS[@]}" "$@"; }
 
+# The standard user (RIG_STD_USER) signs in with a password: Windows OpenSSH
+# keys only administrators through administrators_authorized_keys. ssh reads
+# the password through an askpass helper that prints it from its own
+# environment, so it is never on a command line, in a file or in output. The
+# password options come first: ssh keeps the first value it sees for each.
+sshx_std() {
+	[[ -n ${RIG_STD_USER:-} && -n ${RIG_STD_PASSWORD:-} ]] ||
+		die "no standard user: set RIG_STD_USER and RIG_STD_PASSWORD in $RIG_CONFIG (see references/provisioning.md)"
+	local askpass rc=0
+	askpass=$(mktemp)
+	printf '#!/bin/sh\nprintf "%%s\\n" "$RIG_STD_PASSWORD"\n' >"$askpass"
+	chmod 700 "$askpass"
+	RIG_STD_PASSWORD="$RIG_STD_PASSWORD" SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force \
+		env -u SSH_AUTH_SOCK ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+		-o NumberOfPasswordPrompts=1 "${SSH_OPTS[@]}" "$@" || rc=$?
+	rm -f "$askpass"
+	return $rc
+}
+
 guest_ip() {
 	[[ -n $RIG_HOST ]] && {
 		echo "$RIG_HOST"
@@ -105,6 +126,11 @@ target() {
 	local ip
 	ip=$(guest_ip) || die "no IP for $RIG_DOMAIN (state: $(state)); try: rig up"
 	echo "$RIG_USER@$ip"
+}
+target_std() {
+	local ip
+	ip=$(guest_ip) || die "no IP for $RIG_DOMAIN (state: $(state)); try: rig up"
+	echo "${RIG_STD_USER:-stduser}@$ip"
 }
 
 put() {
@@ -184,10 +210,23 @@ cmd_reset() {
 }
 
 cmd_ps() {
-	local f=${1:?usage: rig ps FILE.ps1 [ARGS]}
+	local as=''
+	if [[ ${1:-} == --as ]]; then
+		[[ ${2:-} == std ]] || die "usage: rig ps [--as std] FILE.ps1 [ARGS]"
+		as=std
+		shift 2
+	fi
+	local f=${1:?usage: rig ps [--as std] FILE.ps1 [ARGS]}
 	shift
+	# The file is copied as the administrator either way; C:\rig is readable
+	# by every authenticated user.
 	put "$f"
-	sshx "$(target)" "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\rig\\$(basename "$f") $*"
+	local cmd="powershell -NoProfile -ExecutionPolicy Bypass -File C:\\rig\\$(basename "$f") $*"
+	if [[ $as == std ]]; then
+		sshx_std "$(target_std)" "$cmd"
+	else
+		sshx "$(target)" "$cmd"
+	fi
 }
 
 # GUI processes started over SSH land in the invisible SSH session. A /IT task
@@ -643,7 +682,17 @@ list) cmd_list ;;
 env | doctor | provision | copy | authorize | up | down | reset | snapshot | ps | focus | cleanup | shot | key | type | tunnel) "cmd_$cmd" "$@" ;;
 run-it) cmd_run_it "$@" ;;
 ip) guest_ip ;;
-ssh) if (($#)); then sshx "$(target)" "$@"; else sshx -t "$(target)"; fi ;;
+ssh)
+	if [[ ${1:-} == --as ]]; then
+		[[ ${2:-} == std ]] || die "usage: rig ssh [--as std] [COMMAND]"
+		shift 2
+		if (($#)); then sshx_std "$(target_std)" "$@"; else sshx_std -t "$(target_std)"; fi
+	elif (($#)); then
+		sshx "$(target)" "$@"
+	else
+		sshx -t "$(target)"
+	fi
+	;;
 put) put "$@" ;;
 get) scpx "$(target):${1:?usage: rig get REMOTE LOCAL}" "${2:?usage: rig get REMOTE LOCAL}" ;;
 -h | --help | help | "") usage ;;
