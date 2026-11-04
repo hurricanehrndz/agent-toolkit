@@ -21,7 +21,12 @@ Sharing (`vncdotool` on this host; the file is 0600) instead of
 `screencapture`, so they need no Screen Recording grant for sshd. Turn Screen
 Sharing on in System Settings and set its VNC password, or do both from a shell:
 `sudo launchctl enable system/com.apple.screensharing && sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist`.
-Such captures carry a "Your screen is being observed" banner.
+Such captures carry a "Your screen is being observed" banner. Check the first
+capture: on a managed Mac, Screen Sharing may show its own login window to the
+VNC viewer instead of the desktop, and then the only capture path is
+`screencapture` with the Screen Recording grant for `sshd-session` (listed as
+`sshd-keygen-wrapper` on some versions) under Privacy & Security, Screen &
+System Audio Recording, in the upper list, not "System Audio Recording Only".
 
 `scripts/mac list` shows the configured hosts and their notes. Choose a host by
 its note. If none fits the task, ask the user rather than guessing.
