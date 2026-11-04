@@ -13,7 +13,15 @@ MAC_ADDR=192.0.2.10            # IP or hostname (required)
 MAC_USER=me                    # default: local $USER
 MAC_KEY=~/.ssh/id_ed25519      # default shown
 MAC_NOTE="what this host is for: installed tools, display size, known grants"
+MAC_VNC_PASSWORD=...           # optional: capture over Screen Sharing (port MAC_VNC_PORT, default 5900)
 ```
+
+With `MAC_VNC_PASSWORD` set, `shot`, `show` and `doctor` capture over Screen
+Sharing (`vncdotool` on this host; the file is 0600) instead of
+`screencapture`, so they need no Screen Recording grant for sshd. Turn Screen
+Sharing on in System Settings and set its VNC password, or do both from a shell:
+`sudo launchctl enable system/com.apple.screensharing && sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist`.
+Such captures carry a "Your screen is being observed" banner.
 
 `scripts/mac list` shows the configured hosts and their notes. Choose a host by
 its note. If none fits the task, ask the user rather than guessing.

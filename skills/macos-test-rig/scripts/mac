@@ -29,11 +29,13 @@ die() {
 	exit 1
 }
 
-# Loads HOST.env: MAC_ADDR (required), MAC_USER (default: $USER), MAC_KEY, MAC_NOTE.
+# Loads HOST.env: MAC_ADDR (required), MAC_USER (default: $USER), MAC_KEY, MAC_NOTE,
+# and MAC_VNC_PASSWORD with MAC_VNC_PORT (default 5900) for captures over
+# Screen Sharing.
 load() {
 	local f="$HOSTS_DIR/${1:?host name required; see: mac list}.env"
 	[[ -f $f ]] || die "no host config $f; see: mac list"
-	MAC_ADDR='' MAC_USER='' MAC_KEY='' MAC_NOTE=''
+	MAC_ADDR='' MAC_USER='' MAC_KEY='' MAC_NOTE='' MAC_VNC_PASSWORD='' MAC_VNC_PORT=''
 	# shellcheck disable=SC1090
 	source "$f"
 	[[ -n $MAC_ADDR ]] || die "MAC_ADDR missing in $f"
@@ -86,6 +88,39 @@ capture_back() {
 	echo "$1"
 }
 
+# A host with MAC_VNC_PASSWORD is captured over Screen Sharing instead of
+# screencapture, which needs a Screen Recording grant for sshd that macOS
+# updates reset. vncdotool's modules may be visible only to its own `vncdo`
+# entry point (nix wraps it that way), so its interpreter and module-path
+# line are reused for scripts/vncshot.py.
+vnc_shot() {
+	local out=$1 wrapped py=python3 prelude=''
+	command -v vncdo >/dev/null || die "capture over VNC needs vncdotool (vncdo) on PATH"
+	wrapped="$(dirname "$(readlink -f "$(command -v vncdo)")")/.vncdo-wrapped"
+	if [[ -f $wrapped ]]; then
+		py=$(sed -n '1s/^#!//p' "$wrapped")
+		prelude=$(sed -n '3{/^import sys;import site/p}' "$wrapped")
+	fi
+	VNC_PASSWORD=$MAC_VNC_PASSWORD "$py" - "$MAC_ADDR::${MAC_VNC_PORT:-5900}" "$out" <<EOF
+$prelude
+$(cat "$(dirname "${BASH_SOURCE[0]}")/vncshot.py")
+EOF
+	echo "$out"
+}
+
+# Capture after settle seconds: over VNC when the host has a password for it,
+# else with screencapture in the SSH session and a copy back.
+grab() {
+	local settle=$1 out=$2
+	if [[ -n $MAC_VNC_PASSWORD ]]; then
+		sleep "$settle"
+		vnc_shot "$out"
+	else
+		sshx "$TARGET" "sleep $settle; screencapture -x /tmp/mac-rig-shot.png"
+		capture_back "$out"
+	fi
+}
+
 cmd_shot() {
 	load "$1"
 	shift
@@ -95,8 +130,8 @@ cmd_shot() {
 		shift 2
 	}
 	local out=${1:?usage: mac shot HOST [--settle S] OUT.png}
-	sshx "$TARGET" "caffeinate -d -u -t 30 >/dev/null 2>&1 & sleep $settle; screencapture -x /tmp/mac-rig-shot.png"
-	capture_back "$out"
+	sshx "$TARGET" "caffeinate -d -u -t 30 >/dev/null 2>&1 &"
+	grab "$settle" "$out"
 }
 
 # Separate SSH sessions miss short-lived windows through timing skew, so the
@@ -113,8 +148,8 @@ cmd_show() {
 	shift
 	[[ ${1:-} == -- ]] && shift
 	(($#)) || die "usage: mac show HOST [--settle S] OUT.png -- COMMAND"
-	sshx "$TARGET" "caffeinate -d -u -t 60 >/dev/null 2>&1 & nohup $* >/tmp/mac-rig-show.log 2>&1 & sleep $settle; screencapture -x /tmp/mac-rig-shot.png"
-	capture_back "$out"
+	sshx "$TARGET" "caffeinate -d -u -t 60 >/dev/null 2>&1 & nohup $* >/tmp/mac-rig-show.log 2>&1 &"
+	grab "$settle" "$out"
 }
 
 osa() { sshx "$TARGET" "osascript -e $(printf '%q' "$1")"; }
@@ -163,7 +198,11 @@ cmd_doctor() {
 	local shot
 	shot=$(mktemp -u "${TMPDIR:-/tmp}/mac-XXXXXX.png")
 	if (cmd_shot "$1" --settle 0 "$shot") >/dev/null 2>&1; then
-		ok "screen capture $shot (Read it: only wallpaper and no windows means the recording grant is missing)"
+		if [[ -n $MAC_VNC_PASSWORD ]]; then
+			ok "screen capture over Screen Sharing $shot (Read it: a lock screen means the console is locked)"
+		else
+			ok "screen capture $shot (Read it: only wallpaper and no windows means the recording grant is missing)"
+		fi
 	else
 		fail "screen capture"
 	fi
