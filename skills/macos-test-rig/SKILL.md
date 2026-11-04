@@ -22,11 +22,15 @@ Sharing (`vncdotool` on this host; the file is 0600) instead of
 Sharing on in System Settings and set its VNC password, or do both from a shell:
 `sudo launchctl enable system/com.apple.screensharing && sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist`.
 Such captures carry a "Your screen is being observed" banner. Check the first
-capture: on a managed Mac, Screen Sharing may show its own login window to the
-VNC viewer instead of the desktop, and then the only capture path is
-`screencapture` with the Screen Recording grant for `sshd-session` (listed as
-`sshd-keygen-wrapper` on some versions) under Privacy & Security, Screen &
-System Audio Recording, in the upper list, not "System Audio Recording Only".
+capture: if it shows Screen Sharing's own login window instead of the desktop,
+the VNC session is being given a virtual display of its own. Attach it to the
+console instead, then restart the service with the two `launchctl` commands
+above:
+`sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true`.
+The fallback is `screencapture` with the Screen Recording grant for
+`sshd-session` (listed as `sshd-keygen-wrapper` on some versions) under
+Privacy & Security, Screen & System Audio Recording, in the upper list, not
+"System Audio Recording Only".
 
 `scripts/mac list` shows the configured hosts and their notes. Choose a host by
 its note. If none fits the task, ask the user rather than guessing.
