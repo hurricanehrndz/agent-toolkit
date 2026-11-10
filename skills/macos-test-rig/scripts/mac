@@ -196,7 +196,8 @@ cmd_doctor() {
 	[[ $out == *"console=$MAC_USER"* ]] || warn "console user is not $MAC_USER; captures and input target another session"
 	local shot
 	shot=$(mktemp -u "${TMPDIR:-/tmp}/mac-XXXXXX.png")
-	if (cmd_shot "$1" --settle 0 "$shot") >/dev/null 2>&1; then
+	# set -e is off inside an if condition, so check the file rather than the status.
+	if (cmd_shot "$1" --settle 0 "$shot") >/dev/null 2>&1 && [[ -s $shot ]]; then
 		if [[ -n $MAC_VNC_PASSWORD ]]; then
 			ok "screen capture over Screen Sharing $shot (Read it: a lock screen means the console is locked)"
 		else
