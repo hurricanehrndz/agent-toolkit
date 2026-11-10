@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readlinkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 
 import { run } from "./agent-toolkit.mjs";
@@ -459,7 +459,18 @@ describe("agent-toolkit installer", () => {
 			if (invalid === "directory") {
 				await mkdir(contextSource);
 			} else if (server !== undefined) {
-				await new Promise<void>((resolveListen) => server.listen(contextSource, resolveListen));
+				// The absolute temp path exceeds the 104-byte Unix socket path limit on
+				// macOS, so bind relative to the context directory.
+				const cwd = process.cwd();
+				process.chdir(dirname(contextSource));
+				try {
+					await new Promise<void>((resolveListen, rejectListen) => {
+						server.once("error", rejectListen);
+						server.listen(basename(contextSource), resolveListen);
+					});
+				} finally {
+					process.chdir(cwd);
+				}
 			} else {
 				const target = join(sandbox, invalid === "symlink" ? "external.md" : "missing.md");
 				if (invalid === "symlink") await writeFile(target, "external");
