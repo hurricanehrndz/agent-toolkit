@@ -21,7 +21,16 @@ Name tasks `rig-*` so `rig cleanup` removes leftovers.
 
 A VM whose config defines `RIG_STD_USER` and `RIG_STD_PASSWORD` has a non-admin
 local account (see
-[provisioning.md](provisioning.md#a-standard-non-admin-user)). Read the values
+[provisioning.md](provisioning.md#a-standard-non-admin-user)). The simplest
+use is a session as that user: `rig ssh --as std 'whoami /groups'` and
+`rig ps --as std FILE.ps1` sign in with the password (Windows OpenSSH keys only
+administrators), so the command runs under the user's own standard token, with
+no process started under other credentials. The password reaches ssh through
+an askpass helper that prints it from the environment; it is never on a
+command line, in a file or in output. `rig ps --as std` still copies the file
+as the administrator, since `C:\rig` is readable by every authenticated user.
+
+For a test that must switch users itself, read the values
 from `~/.config/windows-test-rig/vms/NAME.env` into the guest script you
 `rig put`, and never echo them. A test that runs as SYSTEM or as the admin can
 then call `LogonUserW` (interactive logon) and impersonate the token on a locked

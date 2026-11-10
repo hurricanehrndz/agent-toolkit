@@ -40,17 +40,17 @@ Use `mise run setup`, `mise run fmt`, `mise run typecheck`, `mise run test`, and
 `toolkit:sync` is the normal reconciler. It clones Respec to `~/src/me/respec`
 when absent, fast-forwards a clean checkout, and leaves a dirty checkout at its
 current revision. It then runs `mise install` and `mise exec -- just install`
-there. It also links `~/.local/bin/rig` to
-`skills/windows-test-rig/scripts/rig`, failing rather than replacing an existing
-file or a link to another target. Its dry run must not link, clone, pull,
-install tools, build, or install. Additive-only `install` remains a direct
-CLI/bin command and has no mise alias. npm installs development dependencies
-from `package-lock.json`; never add an installer runtime dependency. Do not add
-runtime Python packages for the web helper; the root mypy/mdformat packages are
-development only. Pi peer packages provide types and must not be bundled. When
-intentionally refreshing Python dependencies, keep public resolution explicit
-with `UV_DEFAULT_INDEX=https://pypi.org/simple uv lock --python 3.14.7`, then
-inspect the lock before committing it.
+there. Its dry run must not clone, pull, install tools, build, or install. Its
+`--bin rig|mac` flags link the test-rig scripts into `~/.local/bin`; an
+unrequested command's link is removed only when it resolves to this checkout.
+Additive-only `install` remains a direct CLI/bin command and has no mise alias.
+npm installs development dependencies from `package-lock.json`; never add an
+installer runtime dependency. Do not add runtime Python packages for the web
+helper; the root mypy/mdformat packages are development only. Pi peer packages
+provide types and must not be bundled. When intentionally refreshing Python
+dependencies, keep public resolution explicit with
+`UV_DEFAULT_INDEX=https://pypi.org/simple uv lock --python 3.14.7`, then inspect
+the lock before committing it.
 
 First-time repository setup is:
 
