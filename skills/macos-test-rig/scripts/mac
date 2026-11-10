@@ -65,11 +65,10 @@ cmd_list() {
 # A sleeping Mac accepts the login and then hangs, so each try is time-boxed.
 cmd_wake() {
 	load "$1"
-	getent ahosts "$MAC_ADDR" >/dev/null || die "cannot resolve $MAC_ADDR (off, or not on this network)"
 	local i
 	for i in {1..8}; do
 		timeout 5 bash -c "echo >/dev/tcp/$MAC_ADDR/22" 2>/dev/null || {
-			((i < 4)) || die "$MAC_ADDR:22 unreachable (host down or no route)"
+			((i < 4)) || die "$MAC_ADDR:22 unreachable (off, not on this network, or no route)"
 			sleep 5
 			continue
 		}
@@ -99,7 +98,7 @@ vnc_shot() {
 	wrapped="$(dirname "$(readlink -f "$(command -v vncdo)")")/.vncdo-wrapped"
 	if [[ -f $wrapped ]]; then
 		py=$(sed -n '1s/^#!//p' "$wrapped")
-		prelude=$(sed -n '3{/^import sys;import site/p}' "$wrapped")
+		prelude=$(sed -n '3{/^import sys;import site/p;}' "$wrapped")
 	fi
 	VNC_PASSWORD=$MAC_VNC_PASSWORD "$py" - "$MAC_ADDR::${MAC_VNC_PORT:-5900}" "$out" <<EOF
 $prelude
